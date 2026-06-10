@@ -9,9 +9,18 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@google/genai": "^2.8.0",
+    "@tailwindcss/typography": "^0.5.20",
+    "groq-sdk": "^1.2.1",
+    "lucide-react": "^1.17.0",
+    "mongoose": "^9.7.0",
     "next": "16.2.7",
+    "openai": "^6.42.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
