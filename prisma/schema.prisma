@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                      String   @id @default(cuid())
+  name                    String
+  email                   String   @unique
+  password                String?
+  image                   String?
+
+  emailVerified           Boolean  @default(false)
+  verificationCode        String?
+  verificationCodeExpires DateTime?
+
+  resetPasswordToken      String?
+  resetPasswordExpires    DateTime?
+  passwordUpdatedAt       DateTime?
+
+  defaultMode             String   @default("default")
+  webSearchDefault        Boolean  @default(false)
+  theme                   String   @default("dark")
+
+  chats                   Chat[]
+
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+}
+
+model Chat {
+  id        String     @id @default(cuid())
+  userId    String
+  title     String
+  mode      String     @default("default")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  documents Document[]
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([userId])
+}
+
+model Message {
+  id      String @id @default(cuid())
+  role    String
+  content String
+
+  chatId  String
+  chat    Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  attachment Attachment?
+
+  createdAt DateTime @default(now())
+
+  @@index([chatId])
+}
+
+model Attachment {
+  id        String @id @default(cuid())
+  name      String
+  type      String
+  size      Int
+
+  messageId String @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Document {
+  id            String @id @default(cuid())
+  name          String
+  type          String
+  size          Int
+  extractedText String
+
+  chatId        String
+  chat          Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime @default(now())
+
+  @@index([chatId])
+}

@@ -93,7 +93,7 @@ export default function ChatPage() {
       setChatSessions(data);
 
       if (data.length > 0) {
-         setActiveChatId(data[0]._id);
+         setActiveChatId(data[0].id);
 
          setActiveMode(
            data[0].mode && data[0].mode !== "default"
@@ -171,7 +171,7 @@ export default function ChatPage() {
   };
 
   const openChat = (chat: ChatSession) => {
-  setActiveChatId(chat._id);
+  setActiveChatId(chat.id);
 
   setActiveMode(
     chat.mode && chat.mode !== "default"
@@ -186,7 +186,7 @@ export default function ChatPage() {
 };
 
   const renameChat = async (chatId: string) => {
-    const chat = chatSessions.find((c) => c._id === chatId);
+    const chat = chatSessions.find((c) => c.id === chatId);
     if (!chat) return;
 
     const newTitle = prompt("Rename chat", chat.title);
@@ -202,7 +202,7 @@ export default function ChatPage() {
       const updatedChat: ChatSession = await res.json();
 
       setChatSessions((prev) =>
-        prev.map((c) => (c._id === chatId ? updatedChat : c))
+        prev.map((c) => (c.id === chatId ? updatedChat : c))
       );
 
       setOpenMenuId(null);
@@ -220,7 +220,7 @@ export default function ChatPage() {
         method: "DELETE",
       });
 
-      const remainingChats = chatSessions.filter((chat) => chat._id !== chatId);
+      const remainingChats = chatSessions.filter((chat) => chat.id !== chatId);
 
       setChatSessions(remainingChats);
       setOpenMenuId(null);
@@ -229,7 +229,7 @@ export default function ChatPage() {
         const nextChat = remainingChats[0];
 
         if (nextChat) {
-          setActiveChatId(nextChat._id);
+          setActiveChatId(nextChat.id);
           setActiveMode(
             nextChat.mode && nextChat.mode !== "default"
             ? nextChat.mode
@@ -247,7 +247,7 @@ export default function ChatPage() {
     }
   };
 
-  const saveChatToMongoDB = async (
+  const saveChat = async (
     chatId: string | null,
     title: string,
     finalMessages: Message[]
@@ -266,7 +266,7 @@ export default function ChatPage() {
 
       setChatSessions((prev) =>
         prev
-          .map((chat) => (chat._id === chatId ? updatedChat : chat))
+          .map((chat) => (chat.id === chatId ? updatedChat : chat))
           .sort(
             (a, b) =>
               new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
@@ -288,7 +288,7 @@ export default function ChatPage() {
 
     const newChat: ChatSession = await res.json();
 
-    setActiveChatId(newChat._id);
+    setActiveChatId(newChat.id);
     setChatSessions((prev) => [newChat, ...prev]);
 
     return newChat;
@@ -328,13 +328,13 @@ export default function ChatPage() {
 
     try {  
        if (!chatIdForRequest) {
-         const newChat = await saveChatToMongoDB(
+         const newChat = await saveChat(
             activeChatId,
             title,
             chatHistory
           );
 
-          chatIdForRequest = newChat._id;
+          chatIdForRequest = newChat.id;
         }
 
       const formData = new FormData();
@@ -381,7 +381,7 @@ export default function ChatPage() {
       ];
 
       setMessages(finalMessages);
-      await saveChatToMongoDB(
+      await saveChat(
         chatIdForRequest, 
         title, 
         finalMessages
@@ -398,7 +398,7 @@ export default function ChatPage() {
       ];
 
       setMessages(errorMessages);
-      await saveChatToMongoDB(
+      await saveChat(
         chatIdForRequest, 
         title, 
         errorMessages

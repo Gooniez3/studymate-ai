@@ -22,7 +22,7 @@ export type ChatMode = "exam" | "assignment" | "career";
 export type DefaultChatMode = "default" | ChatMode;
 
 export type ChatSession = {
-  _id: string;
+  id: string;
   title: string;
   mode?: DefaultChatMode;
   messages: Message[];

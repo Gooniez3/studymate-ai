@@ -1,34 +1,117 @@
 import { NextResponse } from "next/server";
-import { connectDB } from "@/lib/mongodb";
-import Chat from "@/models/Chat";
 import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  try {
+    const session = await auth();
 
-  await connectDB();
-  const chats = await Chat.find({ userId: session.user.id }).sort({ updatedAt: -1 });
-  return NextResponse.json(chats);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const chats = await prisma.chat.findMany({
+      where: {
+        userId: session.user.id,
+      },
+      include: {
+        messages: {
+          include: {
+            attachment: true,
+          },
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+        documents: {
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    return NextResponse.json(chats);
+  } catch (error) {
+    console.error("Failed to load chats:", error);
+
+    return NextResponse.json(
+      { error: "Failed to load chats" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const session = await auth();
+
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json();
+
+    const messages = Array.isArray(body.messages)
+      ? body.messages
+      : [];
+
+    const chat = await prisma.chat.create({
+      data: {
+        userId: session.user.id,
+        title: body.title || "New Chat",
+        mode: body.mode || "default",
+
+        messages: {
+          create: messages.map(
+            (message: {
+              role: string;
+              content: string;
+              attachment?: {
+                name: string;
+                type: string;
+                size: number;
+              } | null;
+            }) => ({
+              role: message.role,
+              content: message.content,
+
+              ...(message.attachment
+                ? {
+                    attachment: {
+                      create: {
+                        name: message.attachment.name,
+                        type: message.attachment.type,
+                        size: message.attachment.size,
+                      },
+                    },
+                  }
+                : {}),
+            })
+          ),
+        },
+      },
+
+      include: {
+        messages: {
+          include: {
+            attachment: true,
+          },
+        },
+        documents: true,
+      },
+    });
+
+    return NextResponse.json(chat);
+  } catch (error) {
+    console.error("Failed to create chat:", error);
+
+    return NextResponse.json(
+      { error: "Failed to create chat" },
+      { status: 500 }
+    );
   }
-
-  await connectDB();
-  const body = await req.json();
-
-  const chat = await Chat.create({
-    userId: session.user.id,
-    title: body.title || "New Chat",
-    mode: body.mode || "default",
-    messages: body.messages || [],
-  });
-
-  return NextResponse.json(chat);
 }

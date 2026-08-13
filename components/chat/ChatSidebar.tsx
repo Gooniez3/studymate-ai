@@ -88,9 +88,9 @@ export default function ChatSidebar({
           <div className="space-y-1">
             {chatSessions.map((chat) => (
               <div
-                key={chat._id}
+                key={chat.id}
                 className={`group relative flex items-center rounded-lg ${
-                  activeChatId === chat._id
+                  activeChatId === chat.id
                     ? "bg-blue-600 text-white"
                     : inactiveButton
                 }`}
@@ -105,17 +105,17 @@ export default function ChatSidebar({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setOpenMenuId(openMenuId === chat._id ? null : chat._id);
+                    setOpenMenuId(openMenuId === chat.id ? null : chat.id);
                   }}
                   className="p-2 opacity-0 hover:text-slate-950 group-hover:opacity-100 dark:hover:text-white"
                 >
                   <MoreHorizontal size={16} />
                 </button>
 
-                {openMenuId === chat._id && (
+                {openMenuId === chat.id && (
                   <div className="absolute right-0 top-9 z-[9999] w-40 rounded-xl border border-slate-200 bg-white p-1 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
                     <button
-                      onClick={() => onRenameChat(chat._id)}
+                      onClick={() => onRenameChat(chat.id)}
                       className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
                     >
                       <Pencil size={14} />
@@ -123,7 +123,7 @@ export default function ChatSidebar({
                     </button>
 
                     <button
-                      onClick={() => onDeleteChat(chat._id)}
+                      onClick={() => onDeleteChat(chat.id)}
                       className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-slate-700"
                     >
                       <Trash2 size={14} />

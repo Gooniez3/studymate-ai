@@ -2,8 +2,7 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
-import { connectDB } from "@/lib/mongodb";
-import User from "@/models/User";
+import { prisma } from "@/lib/prisma";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   providers: [
@@ -20,25 +19,33 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       },
 
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
-
-        await connectDB();
+        if (!credentials?.email || !credentials?.password) {
+          return null;
+        }
 
         const email = String(credentials.email).toLowerCase().trim();
         const password = String(credentials.password);
 
-        const user = await User.findOne({ email });
-        if (!user || !user.password) return null;
+        const user = await prisma.user.findUnique({
+          where: { email },
+        });
+
+        if (!user || !user.password) {
+          return null;
+        }
 
         const isValid = await bcrypt.compare(password, user.password);
-        if (!isValid) return null;
+
+        if (!isValid) {
+          return null;
+        }
 
         if (!user.emailVerified) {
           throw new Error("EMAIL_NOT_VERIFIED");
         }
 
         return {
-          id: user._id.toString(),
+          id: user.id,
           name: user.name,
           email: user.email,
           image: user.image,
@@ -50,22 +57,29 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     async signIn({ user, account }) {
       if (account?.provider === "google") {
-        await connectDB();
-
         const email = user.email?.toLowerCase().trim();
-        if (!email) return false;
 
-        const existing = await User.findOne({ email });
+        if (!email) {
+          return false;
+        }
 
-        if (!existing) {
-          await User.create({
+        await prisma.user.upsert({
+          where: { email },
+
+          update: {
+            name: user.name || "Google User",
+            image: user.image,
+            emailVerified: true,
+          },
+
+          create: {
             name: user.name || "Google User",
             email,
             image: user.image,
             password: null,
             emailVerified: true,
-          });
-        }
+          },
+        });
       }
 
       return true;
@@ -77,14 +91,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       }
 
       if (account?.provider === "google" && token.email) {
-        await connectDB();
+        const email = token.email.toLowerCase().trim();
 
-        const dbUser = await User.findOne({
-          email: token.email.toLowerCase().trim(),
+        const dbUser = await prisma.user.findUnique({
+          where: { email },
         });
 
         if (dbUser) {
-          token.sub = dbUser._id.toString();
+          token.sub = dbUser.id;
         }
       }
 

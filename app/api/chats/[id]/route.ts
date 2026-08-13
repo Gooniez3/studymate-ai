@@ -1,51 +1,159 @@
 import { NextResponse } from "next/server";
-import { connectDB } from "@/lib/mongodb";
-import Chat from "@/models/Chat";
 import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+type IncomingMessage = {
+  role: string;
+  content: string;
+  attachment?: {
+    name: string;
+    type: string;
+    size: number;
+  } | null;
+};
 
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const session = await auth();
+
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+    const body = await req.json();
+
+    const existingChat = await prisma.chat.findFirst({
+      where: {
+        id,
+        userId: session.user.id,
+      },
+    });
+
+    if (!existingChat) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const messages: IncomingMessage[] | undefined =
+      Array.isArray(body.messages) ? body.messages : undefined;
+
+    const chat = await prisma.$transaction(async (tx) => {
+      if (messages) {
+        await tx.message.deleteMany({
+          where: {
+            chatId: id,
+          },
+        });
+      }
+
+      return tx.chat.update({
+        where: {
+          id,
+        },
+
+        data: {
+          ...(typeof body.title === "string"
+            ? { title: body.title }
+            : {}),
+
+          ...(typeof body.mode === "string"
+            ? { mode: body.mode }
+            : {}),
+
+          ...(messages
+            ? {
+                messages: {
+                  create: messages.map((message) => ({
+                    role: message.role,
+                    content: message.content,
+
+                    ...(message.attachment
+                      ? {
+                          attachment: {
+                            create: {
+                              name: message.attachment.name,
+                              type: message.attachment.type,
+                              size: message.attachment.size,
+                            },
+                          },
+                        }
+                      : {}),
+                  })),
+                },
+              }
+            : {}),
+        },
+
+        include: {
+          messages: {
+            include: {
+              attachment: true,
+            },
+            orderBy: {
+              createdAt: "asc",
+            },
+          },
+
+          documents: {
+            orderBy: {
+              createdAt: "asc",
+            },
+          },
+        },
+      });
+    });
+
+    return NextResponse.json(chat);
+  } catch (error) {
+    console.error("Failed to update chat:", error);
+
+    return NextResponse.json(
+      { error: "Failed to update chat" },
+      { status: 500 }
+    );
   }
-
-  await connectDB();
-  const body = await req.json();
-  const { id } = await params;
-
-  const chat = await Chat.findOneAndUpdate(
-    { _id: id, userId: session.user.id },
-    body,
-    { new: true }
-  );
-
-  if (!chat) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  return NextResponse.json(chat);
 }
 
 export async function DELETE(
-  req: Request,
+  _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const session = await auth();
+
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id,
+        userId: session.user.id,
+      },
+    });
+
+    if (!chat) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    await prisma.chat.delete({
+      where: {
+        id,
+      },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Failed to delete chat:", error);
+
+    return NextResponse.json(
+      { error: "Failed to delete chat" },
+      { status: 500 }
+    );
   }
-
-  await connectDB();
-  const { id } = await params;
-
-  const chat = await Chat.findOneAndDelete({ _id: id, userId: session.user.id });
-
-  if (!chat) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  return NextResponse.json({ success: true });
 }

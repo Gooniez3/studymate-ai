@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { auth } from "@/auth";
-import { connectDB } from "@/lib/mongodb";
-import User from "@/models/User";
-import Chat from "@/models/Chat";
+import { prisma } from "@/lib/prisma";
 
 function isStrongPassword(password: string) {
   return (
@@ -19,44 +17,74 @@ export async function GET() {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    await connectDB();
-
-    const user = await User.findById(session.user.id).select(
-      "name email image emailVerified password passwordUpdatedAt defaultMode webSearchDefault theme createdAt"
-    );
+    const user = await prisma.user.findUnique({
+      where: {
+        id: session.user.id,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        image: true,
+        emailVerified: true,
+        password: true,
+        passwordUpdatedAt: true,
+        defaultMode: true,
+        webSearchDefault: true,
+        theme: true,
+        createdAt: true,
+      },
+    });
 
     if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "User not found" },
+        { status: 404 }
+      );
     }
 
-    const totalChats = await Chat.countDocuments({
-      userId: session.user.id,
+    const totalChats = await prisma.chat.count({
+      where: {
+        userId: session.user.id,
+      },
     });
 
     return NextResponse.json({
       user: {
-        id: user._id.toString(),
+        id: user.id,
         name: user.name || "",
         email: user.email,
         image: user.image || "",
-        emailVerified: !!user.emailVerified,
-        accountType: user.password ? "Email & Password" : "Google",
-        loginMethod: user.password ? "Email/password" : "Google OAuth",
-        passwordUpdatedAt: user.passwordUpdatedAt || null,
-        defaultMode: user.defaultMode || "default",
-        webSearchDefault: user.webSearchDefault ?? false,
+        emailVerified: user.emailVerified,
+        accountType: user.password
+          ? "Email & Password"
+          : "Google",
+        loginMethod: user.password
+          ? "Email/password"
+          : "Google OAuth",
+        passwordUpdatedAt:
+          user.passwordUpdatedAt || null,
+        defaultMode:
+          user.defaultMode || "default",
+        webSearchDefault:
+          user.webSearchDefault ?? false,
         theme: user.theme || "system",
         createdAt: user.createdAt,
       },
+
       stats: {
         totalChats,
       },
     });
   } catch (error) {
     console.error("GET_PROFILE_ERROR:", error);
+
     return NextResponse.json(
       { error: "Failed to load profile" },
       { status: 500 }
@@ -69,59 +97,107 @@ export async function PATCH(req: Request) {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
-
-    await connectDB();
 
     const body = await req.json();
 
-    const user = await User.findById(session.user.id).select(
-      "name email password defaultMode webSearchDefault theme passwordUpdatedAt"
-    );
+    const user = await prisma.user.findUnique({
+      where: {
+        id: session.user.id,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        password: true,
+        defaultMode: true,
+        webSearchDefault: true,
+        theme: true,
+        passwordUpdatedAt: true,
+      },
+    });
 
     if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "User not found" },
+        { status: 404 }
+      );
     }
+
+    const updateData: {
+      name?: string;
+      password?: string;
+      passwordUpdatedAt?: Date;
+      defaultMode?: string;
+      webSearchDefault?: boolean;
+      theme?: string;
+    } = {};
 
     if (typeof body.name === "string") {
       const name = body.name.trim();
 
       if (name.length < 2) {
         return NextResponse.json(
-          { error: "Name must be at least 2 characters" },
+          {
+            error:
+              "Name must be at least 2 characters",
+          },
           { status: 400 }
         );
       }
 
-      user.name = name;
+      updateData.name = name;
     }
 
-    if (body.currentPassword || body.newPassword) {
+    if (
+      body.currentPassword ||
+      body.newPassword
+    ) {
       if (!user.password) {
         return NextResponse.json(
-          { error: "Google accounts cannot change password here" },
+          {
+            error:
+              "Google accounts cannot change password here",
+          },
           { status: 400 }
         );
       }
 
-      if (!body.currentPassword || !body.newPassword) {
+      if (
+        !body.currentPassword ||
+        !body.newPassword
+      ) {
         return NextResponse.json(
-          { error: "Current password and new password are required" },
+          {
+            error:
+              "Current password and new password are required",
+          },
           { status: 400 }
         );
       }
 
-      const isMatch = await bcrypt.compare(body.currentPassword, user.password);
+      const isMatch = await bcrypt.compare(
+        body.currentPassword,
+        user.password
+      );
 
       if (!isMatch) {
         return NextResponse.json(
-          { error: "Current password is incorrect" },
+          {
+            error:
+              "Current password is incorrect",
+          },
           { status: 400 }
         );
       }
 
-      if (!isStrongPassword(body.newPassword)) {
+      if (
+        !isStrongPassword(body.newPassword)
+      ) {
         return NextResponse.json(
           {
             error:
@@ -131,47 +207,88 @@ export async function PATCH(req: Request) {
         );
       }
 
-      user.password = await bcrypt.hash(body.newPassword, 12);
-      user.passwordUpdatedAt = new Date();
+      updateData.password = await bcrypt.hash(
+        body.newPassword,
+        12
+      );
+
+      updateData.passwordUpdatedAt =
+        new Date();
     }
 
-    if (typeof body.defaultMode === "string") {
-      const allowedModes = ["default", "exam", "assignment", "career"];
+    if (
+      typeof body.defaultMode === "string"
+    ) {
+      const allowedModes = [
+        "default",
+        "exam",
+        "assignment",
+        "career",
+      ];
 
-      if (!allowedModes.includes(body.defaultMode)) {
+      if (
+        !allowedModes.includes(
+          body.defaultMode
+        )
+      ) {
         return NextResponse.json(
-          { error: "Invalid default mode" },
+          {
+            error: "Invalid default mode",
+          },
           { status: 400 }
         );
       }
 
-      user.defaultMode = body.defaultMode;
+      updateData.defaultMode =
+        body.defaultMode;
     }
 
-    if (typeof body.webSearchDefault === "boolean") {
-      user.webSearchDefault = body.webSearchDefault;
+    if (
+      typeof body.webSearchDefault ===
+      "boolean"
+    ) {
+      updateData.webSearchDefault =
+        body.webSearchDefault;
     }
 
     if (typeof body.theme === "string") {
-      const allowedThemes = ["system", "light", "dark"];
+      const allowedThemes = [
+        "system",
+        "light",
+        "dark",
+      ];
 
-      if (!allowedThemes.includes(body.theme)) {
+      if (
+        !allowedThemes.includes(body.theme)
+      ) {
         return NextResponse.json(
-          { error: "Invalid theme" },
+          {
+            error: "Invalid theme",
+          },
           { status: 400 }
         );
       }
 
-      user.theme = body.theme;
+      updateData.theme = body.theme;
     }
 
-    await user.save();
+    await prisma.user.update({
+      where: {
+        id: session.user.id,
+      },
+      data: updateData,
+    });
 
     return NextResponse.json({
-      message: "Profile updated successfully",
+      message:
+        "Profile updated successfully",
     });
   } catch (error) {
-    console.error("PATCH_PROFILE_ERROR:", error);
+    console.error(
+      "PATCH_PROFILE_ERROR:",
+      error
+    );
+
     return NextResponse.json(
       { error: "Failed to update profile" },
       { status: 500 }

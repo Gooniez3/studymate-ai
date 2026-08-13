@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { connectDB } from "@/lib/mongodb";
-import User from "@/models/User";
+import { prisma } from "@/lib/prisma";
 
 function hashCode(code: string) {
-  return crypto.createHash("sha256").update(code).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(code)
+    .digest("hex");
 }
 
 function isStrongPassword(password: string) {
@@ -19,11 +21,15 @@ function isStrongPassword(password: string) {
 
 export async function POST(req: Request) {
   try {
-    const { email, code, password } = await req.json();
+    const { email, code, password } =
+      await req.json();
 
     if (!email || !code || !password) {
       return NextResponse.json(
-        { error: "Email, code, and password are required." },
+        {
+          error:
+            "Email, code, and password are required.",
+        },
         { status: 400 }
       );
     }
@@ -38,33 +44,60 @@ export async function POST(req: Request) {
       );
     }
 
-    await connectDB();
+    const normalizedEmail = String(email)
+      .toLowerCase()
+      .trim();
 
-    const normalizedEmail = email.toLowerCase().trim();
-
-    const user = await User.findOne({
-      email: normalizedEmail,
-      resetPasswordToken: hashCode(code),
-      resetPasswordExpires: { $gt: new Date() },
+    const user = await prisma.user.findFirst({
+      where: {
+        email: normalizedEmail,
+        resetPasswordToken: hashCode(
+          String(code)
+        ),
+        resetPasswordExpires: {
+          gt: new Date(),
+        },
+      },
     });
 
     if (!user) {
       return NextResponse.json(
-        { error: "Invalid or expired reset code." },
+        {
+          error:
+            "Invalid or expired reset code.",
+        },
         { status: 400 }
       );
     }
 
-    user.password = await bcrypt.hash(password, 12);
-    user.passwordUpdatedAt = new Date();
-    user.emailVerified = true;
-    user.resetPasswordToken = null;
-    user.resetPasswordExpires = null;
-    await user.save();
+    const hashedPassword =
+      await bcrypt.hash(password, 12);
 
-    return NextResponse.json({ success: true });
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        password: hashedPassword,
+        passwordUpdatedAt: new Date(),
+        emailVerified: true,
+        resetPasswordToken: null,
+        resetPasswordExpires: null,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+    });
   } catch (error) {
-    console.error("Reset password error:", error);
-    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+    console.error(
+      "Reset password error:",
+      error
+    );
+
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
   }
 }

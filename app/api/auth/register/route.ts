@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { connectDB } from "@/lib/mongodb";
-import User from "@/models/User";
+import { prisma } from "@/lib/prisma";
 import { sendVerificationEmail } from "@/lib/email";
 
 function generateCode() {
@@ -22,45 +21,66 @@ export async function POST(req: Request) {
     const { name, email, password } = await req.json();
 
     if (!name || !email || !password) {
-      return NextResponse.json({ error: "All fields are required." }, { status: 400 });
-    }
-
-    if (!isStrongPassword(password)) {
       return NextResponse.json(
-        { error: "Password must have 8 characters, 1 uppercase letter, 1 number, and 1 special character." },
+        { error: "All fields are required." },
         { status: 400 }
       );
     }
 
-    await connectDB();
+    if (!isStrongPassword(password)) {
+      return NextResponse.json(
+        {
+          error:
+            "Password must have 8 characters, 1 uppercase letter, 1 number, and 1 special character.",
+        },
+        { status: 400 }
+      );
+    }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const existing = await User.findOne({ email: normalizedEmail });
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    const existing = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
 
     if (existing) {
-      return NextResponse.json({ error: "An account with this email already exists." }, { status: 409 });
+      return NextResponse.json(
+        { error: "An account with this email already exists." },
+        { status: 409 }
+      );
     }
 
     const hashed = await bcrypt.hash(password, 12);
     const code = generateCode();
 
-    await User.create({
-      name: name.trim(),
-      email: normalizedEmail,
-      password: hashed,
-      emailVerified: false,
-      verificationCode: code,
-      verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000),
+    await prisma.user.create({
+      data: {
+        name: String(name).trim(),
+        email: normalizedEmail,
+        password: hashed,
+        emailVerified: false,
+        verificationCode: code,
+        verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000),
+      },
     });
 
     await sendVerificationEmail(normalizedEmail, code);
 
     return NextResponse.json(
-      { success: true, message: "Verification code sent." },
+      {
+        success: true,
+        message: "Verification code sent.",
+      },
       { status: 201 }
     );
   } catch (error) {
     console.error("Register error:", error);
-    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
+
+    return NextResponse.json(
+      {
+        error: "Something went wrong. Please try again.",
+      },
+      { status: 500 }
+    );
   }
 }

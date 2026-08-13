@@ -1,10 +1,7 @@
 import Groq from "groq-sdk";
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
-import { connectDB } from "@/lib/mongodb";
-import Chat from "@/models/Chat";
-
-
+import { prisma } from "@/lib/prisma";
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -34,18 +31,23 @@ type TavilyResult = {
 
 type SearchWebResult = {
   context: string;
-  sources: { title: string; url: string }[];
+  sources: {
+    title: string;
+    url: string;
+  }[];
 };
 
 const MODELS = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant",
 ];
 
 const searchCache = new Map<
   string,
-  { result: SearchWebResult; timestamp: number }
+  {
+    result: SearchWebResult;
+    timestamp: number;
+  }
 >();
 
 const CACHE_TTL_MS = 1000 * 60 * 30;
@@ -64,7 +66,9 @@ function removeModelSources(text: string): string {
 }
 
 function truncateText(text: string, maxChars: number) {
-  if (text.length <= maxChars) return text;
+  if (text.length <= maxChars) {
+    return text;
+  }
 
   return `${text.slice(
     0,
@@ -76,6 +80,7 @@ async function extractPdfText(file: File) {
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pdfParse = require("pdf-parse/lib/pdf-parse.js");
 
   const parsed = await pdfParse(buffer);
@@ -127,7 +132,9 @@ async function parseRequest(req: NextRequest): Promise<{
   };
 }
 
-async function searchWeb(query: string): Promise<SearchWebResult | null> {
+async function searchWeb(
+  query: string
+): Promise<SearchWebResult | null> {
   const apiKey = process.env.TAVILY_API_KEY;
 
   if (!apiKey) {
@@ -166,20 +173,33 @@ async function searchWeb(query: string): Promise<SearchWebResult | null> {
     const data = await res.json();
     const results: TavilyResult[] = data.results || [];
 
-    const validResults = results.filter((r) => r.title && r.url && r.content);
+    const validResults = results.filter(
+      (result) =>
+        result.title &&
+        result.url &&
+        result.content
+    );
 
-    if (validResults.length === 0) return null;
+    if (validResults.length === 0) {
+      return null;
+    }
 
     const context = validResults
-      .map((r, i) => `[${i + 1}] ${r.title}\n${r.content}`)
+      .map(
+        (result, index) =>
+          `[${index + 1}] ${result.title}\n${result.content}`
+      )
       .join("\n\n");
 
-    const sources = validResults.map((r) => ({
-      title: r.title!,
-      url: r.url!,
+    const sources = validResults.map((result) => ({
+      title: result.title!,
+      url: result.url!,
     }));
 
-    const result: SearchWebResult = { context, sources };
+    const result: SearchWebResult = {
+      context,
+      sources,
+    };
 
     searchCache.set(cacheKey, {
       result,
@@ -193,7 +213,9 @@ async function searchWeb(query: string): Promise<SearchWebResult | null> {
   }
 }
 
-async function createStreamWithFallback(messages: ChatMessage[]) {
+async function createStreamWithFallback(
+  messages: ChatMessage[]
+) {
   let lastError: unknown;
 
   for (const model of MODELS) {
@@ -208,7 +230,10 @@ async function createStreamWithFallback(messages: ChatMessage[]) {
 
       console.log(`Using model: ${model}`);
 
-      return { stream, model };
+      return {
+        stream,
+        model,
+      };
     } catch (error) {
       console.error(`Model failed: ${model}`, error);
       lastError = error;
@@ -221,15 +246,21 @@ async function createStreamWithFallback(messages: ChatMessage[]) {
 function getModePrompt(mode: string) {
   const modeInstructions: Record<string, string> = {
     exam: `You are in Exam Revision mode. Help the user study efficiently. Focus on summaries, key definitions, exam-style questions, flashcards, quizzes, memory tips, and likely test points.`,
+
     assignment: `You are in Assignment Help mode. Help the user understand requirements, rubrics, structure, research direction, writing quality, and step-by-step planning. Do not write a full assignment for them unless they ask for a small sample.`,
+
     career: `You are in CV / LinkedIn Help mode. Help with CV improvement, LinkedIn profiles, job descriptions, cover letters, ATS keywords, interview preparation, and career planning. Be practical and specific.`,
+
     default: `You are StudyMate AI — a sharp, friendly AI student assistant. Help with studying, projects, writing, research, career preparation, and general questions.`,
   };
 
   return modeInstructions[mode] || modeInstructions.default;
 }
 
-function getPdfRules(mode: string, pdfFileName: string) {
+function getPdfRules(
+  mode: string,
+  pdfFileName: string
+) {
   if (mode === "exam") {
     return `
 PDF MODE — EXAM REVISION:
@@ -320,118 +351,170 @@ export async function POST(req: NextRequest) {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response("Unauthorized", {
+        status: 401,
+      });
     }
 
-    await connectDB();
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return new Response("Messages are required.", { status: 400 });
+    if (
+      !Array.isArray(messages) ||
+      messages.length === 0
+    ) {
+      return new Response("Messages are required.", {
+        status: 400,
+      });
     }
 
     let pdfContext = "";
     let pdfFileName = "";
 
     if (file) {
-  if (file.type !== "application/pdf") {
-    return new Response("Only PDF files are supported for now.", {
-      status: 400,
-    });
-  }
-
-  if (file.size > 10 * 1024 * 1024) {
-    return new Response("PDF must be under 10MB.", { status: 400 });
-  }
-
-  pdfFileName = file.name;
-
-  console.log("Starting PDF extraction");
-
-  const extractedText = await extractPdfText(file);
-
-  console.log("PDF extraction complete");
-
-  if (!extractedText) {
-    return new Response(
-      "This PDF looks image-based. Text could not be extracted.",
-      { status: 400 }
-    );
-  }
-
-  pdfContext = truncateText(extractedText, 18000);
-
-  if (chatId) {
-    await Chat.findOneAndUpdate(
-      { _id: chatId, userId: session.user.id },
-      {
-        $push: {
-          documents: {
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            extractedText,
-          },
-        },
+      if (file.type !== "application/pdf") {
+        return new Response(
+          "Only PDF files are supported for now.",
+          {
+            status: 400,
+          }
+        );
       }
-    );
-  }
-}
 
-   if (!file && chatId) {
-    const existingChat = await Chat.findOne({
-      _id: chatId,
-     userId: session.user.id,
-     });
+      if (file.size > 10 * 1024 * 1024) {
+        return new Response(
+          "PDF must be under 10MB.",
+          {
+            status: 400,
+          }
+        );
+      }
 
-    const savedDocs = existingChat?.documents || [];
+      pdfFileName = file.name;
 
-    if (savedDocs.length > 0) {
-      pdfFileName = savedDocs.map((doc: any) => doc.name).join(", ");
+      console.log("Starting PDF extraction");
+
+      const extractedText =
+        await extractPdfText(file);
+
+      console.log("PDF extraction complete");
+
+      if (!extractedText) {
+        return new Response(
+          "This PDF looks image-based. Text could not be extracted.",
+          {
+            status: 400,
+          }
+        );
+      }
 
       pdfContext = truncateText(
-       savedDocs
-          .map(
-           (doc: any) =>
-             `DOCUMENT: ${doc.name}\n\n${doc.extractedText}`
-         )
-          .join("\n\n---\n\n"),
-        18000
-       );
-     }
-   }
+        extractedText,
+        8000
+      );
 
-    const currentDate = new Date().toLocaleString("en-SG", {
-      timeZone: "Asia/Singapore",
-      dateStyle: "full",
-      timeStyle: "short",
-    });
+      if (chatId) {
+        const existingChat =
+          await prisma.chat.findFirst({
+            where: {
+              id: chatId,
+              userId: session.user.id,
+            },
+          });
 
-    const cleanMessages: ChatMessage[] = messages
-      .filter(
-        (msg: ClientMessage) =>
-          msg &&
-          (msg.role === "user" || msg.role === "assistant") &&
-          typeof msg.content === "string" &&
-          msg.content.trim() !== "" &&
-          msg.content.trim() !== "● ● ●"
-      )
-      .map((msg: ClientMessage) => ({
-        role: msg.role,
-        content: msg.content.trim(),
-      }))
-      .slice(-20);
+        if (existingChat) {
+          await prisma.document.create({
+            data: {
+              chatId: existingChat.id,
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              extractedText,
+            },
+          });
+        }
+      }
+    }
+
+    if (!file && chatId) {
+      const existingChat =
+        await prisma.chat.findFirst({
+          where: {
+            id: chatId,
+            userId: session.user.id,
+          },
+          include: {
+            documents: {
+              orderBy: {
+                createdAt: "asc",
+              },
+            },
+          },
+        });
+
+      const savedDocs =
+        existingChat?.documents ?? [];
+
+      if (savedDocs.length > 0) {
+        pdfFileName = savedDocs
+          .map((doc) => doc.name)
+          .join(", ");
+
+        pdfContext = truncateText(
+          savedDocs
+            .map(
+              (doc) =>
+                `DOCUMENT: ${doc.name}\n\n${doc.extractedText}`
+            )
+            .join("\n\n---\n\n"),
+          8000
+        );
+      }
+    }
+
+    const currentDate =
+      new Date().toLocaleString("en-SG", {
+        timeZone: "Asia/Singapore",
+        dateStyle: "full",
+        timeStyle: "short",
+      });
+
+    const cleanMessages: ChatMessage[] =
+      messages
+        .filter(
+          (msg: ClientMessage) =>
+            msg &&
+            (msg.role === "user" ||
+              msg.role === "assistant") &&
+            typeof msg.content === "string" &&
+            msg.content.trim() !== "" &&
+            msg.content.trim() !== "● ● ●"
+        )
+        .map((msg: ClientMessage) => ({
+          role: msg.role,
+          content: msg.content.trim(),
+        }))
+        .slice(-8);
 
     const lastUserMessage =
-      [...cleanMessages].reverse().find((m) => m.role === "user")?.content ||
-      "";
+      [...cleanMessages]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "user"
+        )?.content || "";
 
     const modePrompt = getModePrompt(mode);
 
     let searchContext = "";
-    let sources: { title: string; url: string }[] = [];
+    let sources: {
+      title: string;
+      url: string;
+    }[] = [];
 
-    if (webSearchEnabled && lastUserMessage && !pdfContext) {
-      const searchResults = await searchWeb(lastUserMessage);
+    if (
+      webSearchEnabled &&
+      lastUserMessage 
+       ) {
+      const searchResults =
+        await searchWeb(lastUserMessage);
 
       if (searchResults) {
         sources = searchResults.sources;
@@ -439,7 +522,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const pdfRules = getPdfRules(mode, pdfFileName);
+    const pdfRules = getPdfRules(
+      mode,
+      pdfFileName
+    );
 
     const webSearchRules = `
 WEB SEARCH MODE:
@@ -475,10 +561,30 @@ ALWAYS:
 
 ${identityRules}
 
-${pdfContext ? pdfRules : webSearchEnabled && sources.length > 0 ? webSearchRules : normalRules}`;
+${
+  pdfContext && sources.length > 0
+    ? `${pdfRules}
+
+${webSearchRules}
+
+IMPORTANT:
+- Use both the uploaded document and current web search results.
+- For current or real-time questions, prioritize the web search results.
+- For document-specific questions, prioritize the uploaded document.
+- Clearly distinguish current web information from information found in the document.`
+    : pdfContext
+      ? pdfRules
+      : sources.length > 0
+        ? webSearchRules
+        : normalRules
+}`;
 
     const finalMessages: ChatMessage[] = [
-      { role: "system", content: systemPrompt },
+      {
+        role: "system",
+        content: systemPrompt,
+      },
+
       ...(pdfContext
         ? [
             {
@@ -487,57 +593,94 @@ ${pdfContext ? pdfRules : webSearchEnabled && sources.length > 0 ? webSearchRule
             },
           ]
         : []),
+
       ...(searchContext
-        ? [{ role: "system" as const, content: searchContext }]
+        ? [
+            {
+              role: "system" as const,
+              content: searchContext,
+            },
+          ]
         : []),
+
       ...cleanMessages,
     ];
 
-    const { stream } = await createStreamWithFallback(finalMessages);
+    const { stream } =
+      await createStreamWithFallback(
+        finalMessages
+      );
+
     const encoder = new TextEncoder();
 
-    const readableStream = new ReadableStream({
-      async start(controller) {
-        try {
-          let assistantReply = "";
+    const readableStream =
+      new ReadableStream({
+        async start(controller) {
+          try {
+            let assistantReply = "";
 
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || "";
+            for await (const chunk of stream) {
+              const content =
+                chunk.choices[0]?.delta
+                  ?.content || "";
 
-            if (content) {
-              assistantReply += content;
-              controller.enqueue(encoder.encode(content));
+              if (content) {
+                assistantReply += content;
+
+                controller.enqueue(
+                  encoder.encode(content)
+                );
+              }
             }
-          }
 
-          if (sources.length > 0) {
-            const cleaned = removeModelSources(assistantReply);
+            if (sources.length > 0) {
+              const cleaned =
+                removeModelSources(
+                  assistantReply
+                );
 
-            if (cleaned !== assistantReply.trim()) {
-              controller.enqueue(encoder.encode("\n\n"));
+              if (
+                cleaned !==
+                assistantReply.trim()
+              ) {
+                controller.enqueue(
+                  encoder.encode("\n\n")
+                );
+              }
+
+              const sourcesBlock =
+                sources
+                  .map(
+                    (source) =>
+                      `- [${source.title}](${source.url})`
+                  )
+                  .join("\n");
+
+              controller.enqueue(
+                encoder.encode(
+                  `\n\n---\n\n**Sources**\n\n${sourcesBlock}`
+                )
+              );
             }
 
-            const sourcesBlock = sources
-              .map((s) => `- [${s.title}](${s.url})`)
-              .join("\n");
-
-            controller.enqueue(
-              encoder.encode(`\n\n---\n\n**Sources**\n\n${sourcesBlock}`)
+            controller.close();
+          } catch (error) {
+            console.error(
+              "Stream error:",
+              error
             );
-          }
 
-          controller.close();
-        } catch (error) {
-          console.error("Stream error:", error);
-          controller.error(error);
-        }
-      },
-    });
+            controller.error(error);
+          }
+        },
+      });
 
     return new Response(readableStream, {
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
+        "Content-Type":
+          "text/plain; charset=utf-8",
+        "Cache-Control":
+          "no-cache, no-transform",
         Connection: "keep-alive",
       },
     });
@@ -546,7 +689,9 @@ ${pdfContext ? pdfRules : webSearchEnabled && sources.length > 0 ? webSearchRule
 
     return new Response(
       "StudyMate AI is temporarily unavailable. Please try again later.",
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }
