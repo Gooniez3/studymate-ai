@@ -8,11 +8,13 @@ import type {
   ChatSession,
   DefaultChatMode,
   Message,
+  QuizData,
 } from "@/types/chat";
 import ChatSidebar from "@/components/chat/ChatSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
 import { useSession } from "next-auth/react";
+
 
 const starterMessage: Message = {
   role: "assistant",
@@ -26,6 +28,12 @@ type UserProfile = {
   defaultMode: DefaultChatMode;
   webSearchDefault: boolean;
   theme: AppTheme;
+};
+
+
+type QuizMetadata = {
+  type: "quiz";
+  data: QuizData;
 };
 
 export default function ChatPage() {
@@ -47,6 +55,8 @@ export default function ChatPage() {
   const [profileImage, setProfileImage] = useState<string | null>(null);
 
   const { data: session } = useSession();
+  const ACTIVE_CHAT_KEY =
+  "studymate-active-chat-id";
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -77,36 +87,89 @@ export default function ChatPage() {
 
       applyTheme(user.theme || "system");
 
-      if (user.defaultMode && user.defaultMode !== "default") {
-        startSpecialChat(user.defaultMode);
-      }
     } catch (error) {
       console.error("Failed to load user profile:", error);
     }
   };
 
   const loadChats = async () => {
-    try {
-      const res = await fetch("/api/chats");
-      const data: ChatSession[] = await res.json();
+  try {
+    const res =
+      await fetch(
+        "/api/chats"
+      );
 
-      setChatSessions(data);
-
-      if (data.length > 0) {
-         setActiveChatId(data[0].id);
-
-         setActiveMode(
-           data[0].mode && data[0].mode !== "default"
-              ? data[0].mode
-              : null
-       );
-
-        setMessages(data[0].messages);
-      }
-    } catch {
-      console.error("Failed to load chats");
+    if (!res.ok) {
+      throw new Error(
+        "Failed to load chats."
+      );
     }
-  };
+
+    const data:
+      ChatSession[] =
+      await res.json();
+
+    setChatSessions(data);
+
+    if (data.length === 0) {
+      setActiveChatId(null);
+      setActiveMode(null);
+      setMessages([
+        starterMessage,
+      ]);
+
+      localStorage.removeItem(
+        ACTIVE_CHAT_KEY
+      );
+
+      return;
+    }
+
+    const savedChatId =
+      localStorage.getItem(
+        ACTIVE_CHAT_KEY
+      );
+
+    const savedChat =
+      savedChatId
+        ? data.find(
+            (chat) =>
+              chat.id ===
+              savedChatId
+          )
+        : undefined;
+
+    const chatToOpen =
+      savedChat ??
+      data[0];
+
+    setActiveChatId(
+      chatToOpen.id
+    );
+
+    setActiveMode(
+      chatToOpen.mode &&
+        chatToOpen.mode !==
+          "default"
+        ? chatToOpen.mode
+        : null
+    );
+
+    setMessages(
+      chatToOpen.messages
+    );
+
+    localStorage.setItem(
+      ACTIVE_CHAT_KEY,
+      chatToOpen.id
+    );
+  } catch (error) {
+    console.error(
+      "Failed to load chats:",
+      error
+    );
+  }
+};
 
   const createChatTitle = (text: string, file?: File | null) => {
     if (text.trim()) return text.trim().slice(0, 35);
@@ -127,6 +190,10 @@ export default function ChatPage() {
     setInput("");
     setSelectedFile(null);
     setOpenMenuId(null);
+
+    localStorage.removeItem(
+  ACTIVE_CHAT_KEY
+);
   };
 
   const startSpecialChat = (mode: ChatMode) => {
@@ -170,16 +237,29 @@ export default function ChatPage() {
     }
   };
 
-  const openChat = (chat: ChatSession) => {
-  setActiveChatId(chat.id);
+  const openChat = (
+  chat: ChatSession
+) => {
+  setActiveChatId(
+    chat.id
+  );
+
+  localStorage.setItem(
+    ACTIVE_CHAT_KEY,
+    chat.id
+  );
 
   setActiveMode(
-    chat.mode && chat.mode !== "default"
+    chat.mode &&
+      chat.mode !== "default"
       ? chat.mode
       : null
   );
 
-  setMessages(chat.messages);
+  setMessages(
+    chat.messages
+  );
+
   setInput("");
   setSelectedFile(null);
   setOpenMenuId(null);
@@ -246,6 +326,61 @@ export default function ChatPage() {
       alert("Failed to delete chat.");
     }
   };
+  
+const updateQuizMessage =
+  async (
+    messageIndex: number,
+    quiz: QuizData
+  ) => {
+    const updatedMessages =
+      messages.map(
+        (
+          message,
+          index
+        ) =>
+          index ===
+          messageIndex
+            ? {
+                ...message,
+                quiz,
+              }
+            : message
+      );
+
+    setMessages(
+      updatedMessages
+    );
+
+    if (
+      !activeChatId
+    ) {
+      return;
+    }
+
+    const activeChat =
+      chatSessions.find(
+        (chat) =>
+          chat.id ===
+          activeChatId
+      );
+
+    const title =
+      activeChat?.title ??
+      "StudyMate Chat";
+
+    try {
+      await saveChat(
+        activeChatId,
+        title,
+        updatedMessages
+      );
+    } catch (error) {
+      console.error(
+        "Failed to save quiz progress:",
+        error
+      );
+    }
+  };
 
   const saveChat = async (
     chatId: string | null,
@@ -289,124 +424,500 @@ export default function ChatPage() {
     const newChat: ChatSession = await res.json();
 
     setActiveChatId(newChat.id);
+    localStorage.setItem(
+  ACTIVE_CHAT_KEY,
+  newChat.id
+);
     setChatSessions((prev) => [newChat, ...prev]);
 
     return newChat;
   };
 
-  const sendMessage = async () => {
-    if ((!input.trim() && !selectedFile) || isLoading) return;
+ const sendMessage = async () => {
+  if (
+    (!input.trim() && !selectedFile) ||
+    isLoading
+  ) {
+    return;
+  }
 
-    const currentInput = input.trim() || "Please analyze this PDF.";
-    const fileToSend = selectedFile;
-    const title = createChatTitle(currentInput, fileToSend);
+  const currentInput =
+    input.trim() ||
+    "Please analyze this PDF.";
 
-    const attachment: Attachment | null = fileToSend
+  const fileToSend =
+    selectedFile;
+
+  const title =
+    createChatTitle(
+      currentInput,
+      fileToSend
+    );
+
+  const attachment:
+    Attachment | null =
+    fileToSend
       ? {
-          name: fileToSend.name,
-          type: fileToSend.type,
-          size: fileToSend.size,
+          name:
+            fileToSend.name,
+
+          type:
+            fileToSend.type,
+
+          size:
+            fileToSend.size,
         }
       : null;
 
-    const userMessage: Message = {
-      role: "user",
-      content: currentInput,
-      attachment,
-    };
+  const userMessage:
+    Message = {
+    role: "user",
 
-    const chatHistory: Message[] = [
-      ...messages.filter((m) => m.content !== "● ● ●"),
-      userMessage,
-    ];
+    content:
+      currentInput,
 
-    setMessages([...chatHistory, { role: "assistant", content: "" }]);
-    setInput("");
-    setSelectedFile(null);
-    setIsLoading(true);
-    let chatIdForRequest = activeChatId;
+    attachment,
+  };
 
-    try {  
-       if (!chatIdForRequest) {
-         const newChat = await saveChat(
-            activeChatId,
-            title,
-            chatHistory
+  const chatHistory:
+    Message[] = [
+    ...messages.filter(
+      (message) =>
+        message.content !==
+        "â— â— â—"
+    ),
+
+    userMessage,
+  ];
+
+  /*
+   * Add a temporary empty
+   * assistant message while
+   * StudyMate is generating.
+   */
+  setMessages([
+    ...chatHistory,
+
+    {
+      role: "assistant",
+      content: "",
+    },
+  ]);
+
+  setInput("");
+
+  setSelectedFile(null);
+
+  setIsLoading(true);
+
+  let chatIdForRequest =
+    activeChatId;
+
+  try {
+    /*
+     * Create the chat first if this
+     * is a brand-new conversation.
+     *
+     * This is important because the
+     * LangGraph checkpoint thread
+     * uses the chat ID.
+     */
+    if (!chatIdForRequest) {
+      const newChat =
+        await saveChat(
+          activeChatId,
+          title,
+          chatHistory
+        );
+
+      chatIdForRequest =
+        newChat.id;
+    }
+
+    const formData =
+      new FormData();
+
+    formData.append(
+      "messages",
+      JSON.stringify(
+        chatHistory
+      )
+    );
+
+    formData.append(
+      "mode",
+      activeMode ||
+        "default"
+    );
+
+    formData.append(
+      "webSearchEnabled",
+      String(
+        webSearchEnabled
+      )
+    );
+
+    formData.append(
+      "chatId",
+      chatIdForRequest
+    );
+
+    if (fileToSend) {
+      formData.append(
+        "file",
+        fileToSend
+      );
+    }
+
+    /*
+     * Send the request to the
+     * LangGraph-powered API route.
+     */
+    const res =
+      await fetch(
+        "/api/chat",
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+    if (
+      !res.ok ||
+      !res.body
+    ) {
+      throw new Error(
+        "No stream returned."
+      );
+    }
+
+    const reader =
+      res.body.getReader();
+
+    const decoder =
+      new TextDecoder();
+
+    /*
+     * rawAssistantReply:
+     * Everything received from
+     * the API, including hidden
+     * StudyMate metadata.
+     *
+     * visibleAssistantReply:
+     * Only the text the user
+     * should actually see.
+     */
+    let rawAssistantReply =
+      "";
+
+    let visibleAssistantReply =
+      "";
+
+    let quizData:
+      QuizData | null =
+      null;
+
+    /*
+     * Backend metadata markers.
+     */
+    const QUIZ_START =
+      "__STUDYMATE_QUIZ__";
+
+    const QUIZ_END =
+      "__END_STUDYMATE_QUIZ__";
+
+    /*
+     * Read the streamed response.
+     */
+    while (true) {
+      const {
+        done,
+        value,
+      } =
+        await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      const chunk =
+        decoder.decode(
+          value,
+          {
+            stream: true,
+          }
+        );
+
+      rawAssistantReply +=
+        chunk;
+
+      /*
+       * Check whether quiz metadata
+       * has started appearing.
+       */
+      const quizStartIndex =
+        rawAssistantReply.indexOf(
+          QUIZ_START
+        );
+
+      if (
+        quizStartIndex >= 0
+      ) {
+        /*
+         * Everything before the
+         * metadata marker is normal
+         * visible assistant text.
+         */
+        visibleAssistantReply =
+          rawAssistantReply
+            .slice(
+              0,
+              quizStartIndex
+            )
+            .trimEnd();
+
+        /*
+         * The metadata may arrive
+         * across multiple stream
+         * chunks, so only parse it
+         * when the closing marker
+         * has also arrived.
+         */
+        const quizEndIndex =
+          rawAssistantReply.indexOf(
+            QUIZ_END,
+            quizStartIndex +
+              QUIZ_START.length
           );
 
-          chatIdForRequest = newChat.id;
+        if (
+          quizEndIndex >= 0
+        ) {
+          const quizJson =
+            rawAssistantReply.slice(
+              quizStartIndex +
+                QUIZ_START.length,
+
+              quizEndIndex
+            );
+
+          try {
+            const parsed =
+              JSON.parse(
+                quizJson
+              ) as QuizMetadata;
+
+            if (
+              parsed.type ===
+                "quiz" &&
+              parsed.data
+            ) {
+              quizData =
+                parsed.data;
+            }
+          } catch (error) {
+            console.error(
+              "Failed to parse quiz metadata:",
+              error
+            );
+          }
         }
-
-      const formData = new FormData();
-
-      formData.append("messages", JSON.stringify(chatHistory));
-      formData.append("mode", activeMode || "default");
-      formData.append("webSearchEnabled", String(webSearchEnabled));
-      formData.append("chatId", chatIdForRequest);
-
-      if (fileToSend) {
-        formData.append("file", fileToSend);
+      } else {
+        /*
+         * Normal non-quiz response.
+         */
+        visibleAssistantReply =
+          rawAssistantReply;
       }
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok || !res.body) {
-        throw new Error("No stream returned.");
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      let assistantReply = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        assistantReply += chunk;
-
-        setMessages([
-          ...chatHistory,
-          { role: "assistant", content: assistantReply },
-        ]);
-      }
-
-      const finalMessages: Message[] = [
+      /*
+       * Update the visible assistant
+       * message during streaming.
+       *
+       * Hidden quiz JSON never
+       * appears in the UI.
+       */
+      setMessages([
         ...chatHistory,
-        { role: "assistant", content: assistantReply },
-      ];
 
-      setMessages(finalMessages);
-      await saveChat(
-        chatIdForRequest, 
-        title, 
-        finalMessages
-      );
-    } catch (error) {
-      console.error(error);
-
-      const errorMessages: Message[] = [
-        ...chatHistory,
         {
-          role: "assistant",
-          content: "Something went wrong. Please try again.",
-        },
-      ];
+          role:
+            "assistant",
 
-      setMessages(errorMessages);
-      await saveChat(
-        chatIdForRequest, 
-        title, 
-        errorMessages
-      );
-    } finally {
-      setIsLoading(false);
+          content:
+            visibleAssistantReply,
+        },
+      ]);
     }
-  };
+
+    /*
+     * Flush any remaining bytes in
+     * the TextDecoder.
+     */
+    const remaining =
+      decoder.decode();
+
+    if (remaining) {
+      rawAssistantReply +=
+        remaining;
+    }
+
+    /*
+     * Parse metadata one last time
+     * after the stream has finished.
+     *
+     * This makes the parser safer
+     * if the metadata arrives in
+     * unusual stream boundaries.
+     */
+    const finalQuizStartIndex =
+      rawAssistantReply.indexOf(
+        QUIZ_START
+      );
+
+    if (
+      finalQuizStartIndex >= 0
+    ) {
+      visibleAssistantReply =
+        rawAssistantReply
+          .slice(
+            0,
+            finalQuizStartIndex
+          )
+          .trimEnd();
+
+      const finalQuizEndIndex =
+        rawAssistantReply.indexOf(
+          QUIZ_END,
+          finalQuizStartIndex +
+            QUIZ_START.length
+        );
+
+      if (
+        finalQuizEndIndex >= 0
+      ) {
+        const quizJson =
+          rawAssistantReply.slice(
+            finalQuizStartIndex +
+              QUIZ_START.length,
+
+            finalQuizEndIndex
+          );
+
+        try {
+          const parsed =
+            JSON.parse(
+              quizJson
+            ) as QuizMetadata;
+
+          if (
+            parsed.type ===
+              "quiz" &&
+            parsed.data
+          ) {
+            quizData =
+              parsed.data;
+          }
+        } catch (error) {
+          console.error(
+            "Failed to parse final quiz metadata:",
+            error
+          );
+        }
+      }
+    } else {
+      visibleAssistantReply =
+        rawAssistantReply;
+    }
+
+    /*
+     * For this step we only confirm
+     * that structured quiz data has
+     * successfully reached the
+     * frontend.
+     *
+     * In the next step this data
+     * will be attached to the
+     * Message and rendered as an
+     * interactive quiz card.
+     */
+    if (quizData) {
+      console.log(
+        "Interactive quiz received:",
+        quizData
+      );
+
+      console.log(
+        "Quiz title:",
+        quizData.title
+      );
+
+      console.log(
+        "Quiz questions:",
+        quizData.questions.length
+      );
+    }
+
+    /*
+     * Save only the visible text.
+     *
+     * Do NOT save the hidden
+     * __STUDYMATE_QUIZ__ metadata
+     * string as chat content.
+     */
+    const finalMessages:
+  Message[] = [
+  ...chatHistory,
+
+  {
+    role:
+      "assistant",
+
+    content:
+      visibleAssistantReply,
+
+    quiz:
+      quizData,
+  },
+];
+
+    setMessages(
+      finalMessages
+    );
+
+    await saveChat(
+      chatIdForRequest,
+      title,
+      finalMessages
+    );
+  } catch (error) {
+    console.error(
+      "Send message failed:",
+      error
+    );
+
+    const errorMessage:
+      Message = {
+      role:
+        "assistant",
+
+      content:
+        "StudyMate AI could not complete that request. Please try again.",
+    };
+
+    const finalMessages:
+      Message[] = [
+      ...chatHistory,
+      errorMessage,
+    ];
+
+    setMessages(
+      finalMessages
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   return (
     <main className="flex h-screen overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-white">
@@ -444,6 +955,9 @@ export default function ChatPage() {
           isLoading={isLoading}
           webSearchEnabled={webSearchEnabled}
           onCopyCode={copyCode}
+          onQuizChange={
+          updateQuizMessage
+}
         />
 
         <ChatInput

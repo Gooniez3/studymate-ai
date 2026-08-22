@@ -11,15 +11,39 @@ export type ChatDocument = {
   extractedText: string;
 };
 
+export type QuizQuestion = {
+  question: string;
+  options: string[];
+  answer: string;
+  explanation: string;
+};
+
+export type QuizData = {
+  title: string;
+  questions: QuizQuestion[];
+
+  answers?: Record<number, string>;
+
+  submitted?: boolean;
+
+  score?: number | null;
+};
+
 export type Message = {
   role: "user" | "assistant";
   content: string;
   attachment?: Attachment | null;
+  quiz?: QuizData | null;
 };
 
-export type ChatMode = "exam" | "assignment" | "career";
+export type ChatMode =
+  | "exam"
+  | "assignment"
+  | "career";
 
-export type DefaultChatMode = "default" | ChatMode;
+export type DefaultChatMode =
+  | "default"
+  | ChatMode;
 
 export type ChatSession = {
   id: string;
@@ -30,4 +54,7 @@ export type ChatSession = {
   updatedAt: string;
 };
 
-export type AppTheme = "dark" | "light" | "system";
+export type AppTheme =
+  | "dark"
+  | "light"
+  | "system";

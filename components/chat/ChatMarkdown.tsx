@@ -98,7 +98,14 @@ export default function ChatMarkdown({
   copiedCode,
   onCopyCode,
 }: ChatMarkdownProps) {
-  const { body, sources } = parseSourcesFromContent(content);
+  const { body, sources } =
+  parseSourcesFromContent(content);
+
+const displayBody =
+  body.replace(
+    /\[EVIDENCE_(\d+)\]/g,
+    "[$1]"
+  );
 
   return (
     <div className="w-full">
@@ -257,7 +264,7 @@ export default function ChatMarkdown({
             ),
           }}
         >
-          {body}
+          {displayBody}
         </ReactMarkdown>
       </div>
 
