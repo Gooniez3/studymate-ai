@@ -75,6 +75,9 @@ export async function verificationNode(
     };
   }
 
+  const verificationStartedAt =
+    performance.now();
+
   try {
     const formattedPrompt =
       await webVerificationPrompt.formatMessages(
@@ -126,7 +129,23 @@ export async function verificationNode(
         {
           temperature: 0,
           maxTokens: 500,
+
+          /*
+           * Verification is a classification-style
+           * control-plane task - the small fast
+           * model handles VERIFIED/NOT VERIFIED
+           * extraction reliably and keeps the web
+           * path well under the latency budget.
+           */
+          preferFastModel: true,
         }
+      );
+
+    console.log(
+      `[perf] verification: ${Math.round(
+        performance.now() -
+          verificationStartedAt
+      )}ms`
       );
 
     const verificationContext =

@@ -18,24 +18,36 @@ async function main() {
       message:
         "Explain recursion simply.",
       webSearchEnabled: false,
+      documentNames: [] as string[],
+      attachedThisTurn: false,
     },
     {
       name: "Document",
       message:
         "What does my uploaded PDF say about Aurora Notebook?",
       webSearchEnabled: false,
+      documentNames: [
+        "aurora-lecture.pdf",
+      ] as string[],
+      attachedThisTurn: false,
     },
     {
       name: "Web",
       message:
         "What is the latest iPhone?",
       webSearchEnabled: true,
+      documentNames: [
+        "aurora-lecture.pdf",
+      ] as string[],
+      attachedThisTurn: false,
     },
     {
       name: "Quiz",
       message:
         "Quiz me on recursion.",
       webSearchEnabled: false,
+      documentNames: [] as string[],
+      attachedThisTurn: false,
     },
   ];
 
@@ -57,6 +69,14 @@ async function main() {
           test.webSearchEnabled,
 
         route: "direct",
+
+        previousRoute: null,
+
+        documentNames:
+          test.documentNames,
+
+        documentAttachedThisTurn:
+          test.attachedThisTurn,
 
         documentContext: "",
 

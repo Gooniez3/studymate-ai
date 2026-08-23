@@ -62,6 +62,19 @@ export const StudyMateState =
       default: () => "direct",
     }),
 
+    /*
+     * Route chosen in the previous turn.
+     * Persisted via checkpoints so the router
+     * and downstream nodes can detect
+     * document-focused follow-up turns.
+     */
+    previousRoute: Annotation<
+      StudyMateRoute | null
+    >({
+      reducer: (_, next) => next,
+      default: () => null,
+    }),
+
     documentContext: Annotation<string>({
       reducer: (_, next) => next,
       default: () => "",
@@ -87,6 +100,26 @@ export const StudyMateState =
         reducer: (_, next) => next,
         default: () => [],
       }),
+
+    /*
+     * Names of documents that actually exist
+     * for this chat (including one uploaded
+     * in the current request). Empty means
+     * the chat has no retrievable documents.
+     */
+    documentNames: Annotation<string[]>({
+      reducer: (_, next) => next,
+      default: () => [],
+    }),
+
+    /*
+     * True only when a PDF was attached and
+     * saved as part of the current request.
+     */
+    documentAttachedThisTurn: Annotation<boolean>({
+      reducer: (_, next) => next,
+      default: () => false,
+    }),
 
     response: Annotation<string>({
       reducer: (_, next) => next,

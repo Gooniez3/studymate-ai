@@ -11,6 +11,7 @@ import {
 
 import {
   routerNode,
+  looksLikeDocumentFollowUp,
 } from "@/lib/ai/graph/router";
 
 import {
@@ -71,7 +72,119 @@ function getLastUserText(
   return "";
 }
 
-async function quizNode(
+/*
+ * Returns the human message BEFORE the
+ * newest one. Used to resolve vague
+ * follow-ups ("quiz me on this", "what
+ * about page 2") to the topic the user is
+ * still referring to.
+ */
+function getPreviousUserText(
+  state: StudyMateGraphState
+): string {
+  const messages =
+    state.messages ?? [];
+
+  let foundLastHuman = false;
+
+  for (
+    let index =
+      messages.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const message =
+      messages[index];
+
+    if (
+      message._getType() !==
+      "human"
+    ) {
+      continue;
+    }
+
+    if (!foundLastHuman) {
+      foundLastHuman = true;
+
+      continue;
+    }
+
+    return typeof message.content ===
+      "string"
+      ? message.content
+      : "";
+  }
+
+  return "";
+}
+
+/*
+ * Returns the most recent human message
+ * that carries real topical content,
+ * skipping short or purely referential
+ * follow-ups such as "explain that more
+ * simply". Used to build retrieval queries
+ * for vague document-grounded requests.
+ */
+function getTopicalUserText(
+  state: StudyMateGraphState
+): string {
+  const messages =
+    state.messages ?? [];
+
+  let seenLastHuman = false;
+
+  for (
+    let index =
+      messages.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const message =
+      messages[index];
+
+    if (
+      message._getType() !==
+      "human"
+    ) {
+      continue;
+    }
+
+    const content =
+      typeof message.content ===
+      "string"
+        ? message.content.trim()
+        : "";
+
+    if (!seenLastHuman) {
+      seenLastHuman = true;
+
+      continue;
+    }
+
+    if (!content) {
+      continue;
+    }
+
+    if (
+      content.length < 12 ||
+      looksLikeDocumentFollowUp(content)
+    ) {
+      continue;
+    }
+
+    return content;
+  }
+
+  return "";
+}
+
+/*
+ * Exported for testing: scripts exercise
+ * document-grounded quiz detection directly
+ * against crafted states.
+ */
+export async function quizNode(
   state: StudyMateGraphState
 ) {
   console.log(
@@ -96,16 +209,70 @@ async function quizNode(
     const lowerMessage =
       userMessage.toLowerCase();
 
-    const wantsDocumentQuiz =
-      /\b(pdf|document|file|uploaded|upload|notes|slides|material|chapter)\b/.test(
+    /*
+     * Document grounding is decided from a
+     * combination of signals rather than a
+     * single rule:
+     *
+     * 1. Explicit uploaded-material words
+     *    ("pdf", "document", "uploaded", ...)
+     * 2. Page references ("page 1",
+     *    "pages 2-4", "page number 3")
+     * 3. Conversational references ("this",
+     *    "that", "what we just discussed")
+     *    combined with actual document
+     *    presence or a document-grounded
+     *    previous turn.
+     */
+    const hasDocumentMaterial =
+      state.documentNames.length > 0 ||
+      state.documentAttachedThisTurn ||
+      state.previousRoute ===
+        "document";
+
+    const mentionsUploadedMaterial =
+      /\b(pdf|documents?|docs?|files?|uploads?|uploaded|attachments?|notes?|slides?|lectures?|materials?|readings?|chapters?)\b/.test(
+        lowerMessage
+      ) ||
+      /\bpages?\s*(?:numbers?\s*)?\d+\b/.test(
         lowerMessage
       );
+
+    /*
+     * Quoted segments are stripped first so
+     * programming questions like "quiz me on
+     * the 'this' keyword" are not mistaken
+     * for document references.
+     */
+    const unquotedMessage = lowerMessage.replace(
+      /["'`][^"'`]*["'`]/g,
+      " "
+    );
+
+    const mentionsConversationReference =
+      /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+        unquotedMessage
+      ) ||
+      /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+        lowerMessage
+      ) ||
+      /\bjust\s+discussed\b/.test(
+        lowerMessage
+      );
+
+    const wantsDocumentQuiz =
+      mentionsUploadedMaterial ||
+      (mentionsConversationReference &&
+        hasDocumentMaterial);
+
+    const quizRetrievalStartedAt =
+      performance.now();
 
     if (
       wantsDocumentQuiz &&
       state.chatId
     ) {
-      const documentResult =
+      let documentResult =
         await searchDocuments({
           chatId:
             state.chatId,
@@ -115,17 +282,80 @@ async function quizNode(
         });
 
       if (
+        !documentResult.success
+      ) {
+        /*
+         * Vague document quizzes ("quiz me on
+         * this") embed poorly on their own, so
+         * retry against the most topical user
+         * message earlier in the conversation,
+         * skipping purely referential turns.
+         */
+        const topicalUserMessage =
+          getTopicalUserText(state);
+
+        if (
+          topicalUserMessage.trim()
+        ) {
+          documentResult =
+            await searchDocuments({
+              chatId:
+                state.chatId,
+              query: `${topicalUserMessage}\n${userMessage}`,
+              limit: 4,
+            });
+        }
+      }
+
+      if (
+        !documentResult.success &&
+        state.documentNames.length > 0
+      ) {
+        /*
+         * Last resort for fully referential
+         * quizzes with no usable conversation
+         * topic: the document name usually
+         * embeds close to title and intro
+         * chunks, which keeps the quiz grounded
+         * instead of inventing generic content.
+         */
+        documentResult =
+          await searchDocuments({
+            chatId:
+              state.chatId,
+
+            query: state.documentNames.join(
+              ", "
+            ),
+
+            limit: 4,
+          });
+      }
+
+      if (
         documentResult.success
       ) {
         quizContext =
           documentResult.context;
       }
+
+      console.log(
+        `[perf] quiz document retrieval: ${Math.round(
+          performance.now() -
+            quizRetrievalStartedAt
+        )}ms`
+      );
     }
 
     console.log(
       "Quiz context selection:",
       {
         wantsDocumentQuiz,
+        mentionsUploadedMaterial,
+        mentionsConversationReference,
+        continuesDocumentDiscussion:
+          mentionsConversationReference &&
+          hasDocumentMaterial,
         hasContext:
           quizContext.length > 0,
         contextLength:
@@ -176,12 +406,58 @@ return {
     };
   }
 }
+/*
+ * Simple dynamic output budget: concise
+ * requests get fewer tokens, explicit
+ * requests for detail get more. Never
+ * unbounded.
+ */
+function estimateResponseBudget(
+  userMessage: string
+): number {
+  const text =
+    userMessage.toLowerCase();
+
+  const wantsDetail =
+    /\b(detail|detailed|comprehensive|in[- ]depth|thoroughly|extensive|everything|full story|long answer)\b/.test(
+      text
+    ) ||
+    userMessage.trim().length > 220;
+
+  if (wantsDetail) {
+    return 1300;
+  }
+
+  if (
+    userMessage.trim().length < 60
+  ) {
+    return 600;
+  }
+
+  return 900;
+}
+
+type ResponseNodeConfig = {
+  configurable?: {
+    /*
+     * Set by app/api/chat/route.ts to stream
+     * answer tokens to the browser while
+     * generation is still running.
+     */
+    onToken?: (delta: string) => void;
+  };
+};
+
 async function responseNode(
-  state: StudyMateGraphState
+  state: StudyMateGraphState,
+  config?: ResponseNodeConfig
 ) {
   console.log(
     "LangGraph node: response"
   );
+
+  const onToken =
+    config?.configurable?.onToken;
 
   const userMessage =
     getLastUserText(state);
@@ -262,50 +538,71 @@ async function responseNode(
   }
 
   /*
-   * Convert LangGraph message history
-   * into the provider's ChatMessage format.
+   * Convert LangGraph message history into
+   * the provider's ChatMessage format.
    *
-   * This is what allows checkpointed
-   * conversation context to reach the LLM.
+   * Bounded for latency and cost: only the
+   * last 6 messages are sent, older ones are
+   * truncated, and the most recent exchange
+   * stays intact so references and follow-ups
+   * keep working. Checkpoint memory itself is
+   * untouched - this only trims what goes
+   * into the prompt.
    */
+  const recentMessages = (
+    state.messages ?? []
+  ).slice(-6);
+
   const conversationMessages:
     ChatMessage[] =
-    (state.messages ?? [])
-      .slice(-12)
-      .map((message) => {
-        const type =
-          message._getType();
+    recentMessages.map((message, index) => {
+      const type =
+        message._getType();
 
-        const content =
-          typeof message.content ===
-          "string"
-            ? message.content
-            : String(
-                message.content
-              );
+      let content =
+        typeof message.content ===
+        "string"
+          ? message.content
+          : String(
+              message.content
+            );
 
-        if (type === "human") {
-          return {
-            role:
-              "user" as const,
-            content,
-          };
-        }
+      const isPartOfCurrentExchange =
+        index >=
+        recentMessages.length - 2;
 
-        if (type === "ai") {
-          return {
-            role:
-              "assistant" as const,
-            content,
-          };
-        }
+      if (
+        !isPartOfCurrentExchange &&
+        content.length > 480
+      ) {
+        content = `${content.slice(
+          0,
+          480
+        )}...`;
+      }
 
+      if (type === "human") {
         return {
           role:
-            "system" as const,
+            "user" as const,
           content,
         };
-      });
+      }
+
+      if (type === "ai") {
+        return {
+          role:
+            "assistant" as const,
+          content,
+        };
+      }
+
+      return {
+        role:
+          "system" as const,
+        content,
+      };
+    });
 
   const messages:
     ChatMessage[] = [
@@ -347,6 +644,12 @@ DIRECT ROUTE:
 - If the route is "direct", answer normally using stable general knowledge and the conversation history.
 - If the user asks about something they said earlier, use the prior conversation messages.
 - Do not claim current or changing facts unless they were provided in context.
+- Match answer length to the user's request.
+- For simple or broad questions, start with a concise answer instead of an exhaustive report.
+- Do not introduce current politics, current officeholders, current conflicts, current prices, current rankings, recent releases, or other time-sensitive facts unless they were supplied in context.
+- If the user explicitly asks for current, latest, recent, today, or otherwise time-sensitive information, that request should be handled by the web route.
+- For broad country questions, prefer stable background such as geography, language, culture, and established historical context.
+- Do not add unrelated sections just to make the answer longer.
 
 DOCUMENT ROUTE:
 - If the route is "document", use ONLY the supplied DOCUMENT CONTEXT for document-specific factual claims.
@@ -366,8 +669,27 @@ WEB ROUTE:
 - If the verification verdict is INSUFFICIENT, do not guess the answer.
 - If sources conflict, mention the conflict when it matters to the user's question.
 
-OUTPUT:
+PRESENTATION:
+- Match the structure and length to the user's question.
+- Answer the user's actual question first.
+- For simple questions, prefer a concise answer.
+- Expand when the user asks for an explanation, detailed answer, comparison, study notes, or comprehensive overview.
+- Do not force information into a table when normal headings and bullets are clearer.
+- Use a table only for genuinely tabular comparisons or compact structured facts.
+- For broad questions such as "Tell me about a country", give a concise overview first, then include only the most useful points.
+- Avoid unnecessary sections and excessive detail.
+
+OUTPUT FORMATTING:
 - Return only the answer.
+- Use standard Markdown only.
+- NEVER output raw HTML tags.
+- NEVER output <br>, <br/>, <br />, <div>, <span>, <p>, or other HTML.
+- For lists, use normal Markdown bullets with "- ".
+- For numbered steps, use Markdown numbered lists.
+- For tables, keep each table cell concise and on a single line.
+- Do not try to create multiple lines inside a Markdown table cell using HTML.
+- If a table cell would require several bullet points or long paragraphs, do NOT use a table for that section. Use headings and Markdown bullet lists instead.
+- Prefer readable paragraphs and lists over overly large tables.
 - Do not append source metadata.
       `.trim(),
     },
@@ -375,18 +697,139 @@ OUTPUT:
     ...conversationMessages,
   ];
 
+  /*
+   * Token forwarding for true streaming.
+   *
+   * The final response is cleaned of raw
+   * <br> tags after generation today; when
+   * streaming, the same cleaning must happen
+   * per delta. A tiny carry buffer holds back
+   * a trailing partial tag (e.g. "<br") so
+   * tags split across chunks never leak into
+   * the browser.
+   */
+  let carryBuffer = "";
+
+  const sanitizeDelta = (
+    text: string
+  ) =>
+    text.replace(
+      /<br\s*\/?>/gi,
+      " "
+    );
+
+  const forwardCleanDelta = (
+    delta: string
+  ) => {
+    if (!onToken) {
+      return;
+    }
+
+    let text =
+      carryBuffer + delta;
+
+    carryBuffer = "";
+
+    const lastOpenIndex =
+      text.lastIndexOf("<");
+
+    if (
+      lastOpenIndex !== -1 &&
+      !text
+        .slice(lastOpenIndex)
+        .includes(">") &&
+      text.length - lastOpenIndex <=
+        8
+    ) {
+      carryBuffer = text.slice(
+        lastOpenIndex
+      );
+
+      text = text.slice(
+        0,
+        lastOpenIndex
+      );
+    }
+
+    text = sanitizeDelta(text);
+
+    if (text) {
+      onToken(text);
+    }
+  };
+
+  const flushCleanCarry = () => {
+    if (!carryBuffer || !onToken) {
+      carryBuffer = "";
+
+      return;
+    }
+
+    const text = sanitizeDelta(
+      carryBuffer
+    );
+
+    carryBuffer = "";
+
+    if (text) {
+      onToken(text);
+    }
+  };
+
+  const generationStartedAt =
+    performance.now();
+
+  let firstTokenAt: number | null =
+    null;
+
   try {
     const completion =
       await createAICompletion(
         messages,
         {
           temperature: 0.35,
-          maxTokens: 800,
+
+          maxTokens:
+            estimateResponseBudget(
+              userMessage
+            ),
+
+          onToken: (delta) => {
+            if (
+              firstTokenAt === null
+            ) {
+              firstTokenAt =
+                performance.now();
+
+              console.log(
+                `[perf] final generation first token: ${Math.round(
+                  firstTokenAt -
+                    generationStartedAt
+                )}ms`
+              );
+            }
+
+            forwardCleanDelta(delta);
+          },
         }
       );
 
+    flushCleanCarry();
+
+    console.log(
+      `[perf] final generation total: ${Math.round(
+        performance.now() -
+          generationStartedAt
+      )}ms`
+    );
+
     const response =
-      completion.content.trim();
+  completion.content
+    .replace(
+      /<br\s*\/?>/gi,
+      " "
+    )
+    .trim();
 
     console.log(
       "LangGraph response generated:",
@@ -507,13 +950,44 @@ async function documentNode(
     };
   }
 
+  /*
+   * Follow-ups such as "What about page 2?"
+   * carry no retrievable content on their
+   * own, so blend in what the conversation
+   * was discussing before retrieval.
+   */
+  const previousUserMessage =
+    getPreviousUserText(state);
+
+  if (
+    previousUserMessage.trim() &&
+    query.length <= 120 &&
+    looksLikeDocumentFollowUp(query)
+  ) {
+    console.log(
+      "LangGraph document retrieval query enriched from prior turn"
+    );
+
+    query = `${previousUserMessage}\n${query}`;
+  }
+
   try {
+    const retrievalStartedAt =
+      performance.now();
+
     const result =
       await searchDocuments({
         chatId,
         query,
         limit: 4,
       });
+
+    console.log(
+      `[perf] document retrieval: ${Math.round(
+        performance.now() -
+          retrievalStartedAt
+      )}ms`
+    );
 
     console.log(
   "LangGraph document retrieval:",
@@ -606,10 +1080,20 @@ async function webNode(
   }
 
   try {
+    const searchStartedAt =
+      performance.now();
+
     const result =
       await searchWebMultiple([
         query,
       ]);
+
+    console.log(
+      `[perf] web search: ${Math.round(
+        performance.now() -
+          searchStartedAt
+      )}ms`
+    );
 
     if (!result) {
       return {

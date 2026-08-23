@@ -33,6 +33,22 @@ export type TextStreamResult = {
 export type AICompletionOptions = {
   temperature?: number;
   maxTokens?: number;
+
+  /*
+   * Use the small/fast Groq model for
+   * lightweight control-plane work
+   * (routing, verification, query rewrites).
+   * Final user-facing answers keep the
+   * stronger model.
+   */
+  preferFastModel?: boolean;
+
+  /*
+   * When provided, completions stream token
+   * deltas to this callback while the full
+   * text is still returned as usual.
+   */
+  onToken?: (delta: string) => void;
 };
 
 const groq = new Groq({
@@ -42,6 +58,17 @@ const groq = new Groq({
 const GROQ_MODELS = [
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
+] as const;
+
+/*
+ * Fast control-plane models. The small
+ * model answers routing/verification style
+ * decisions; the strong model remains as a
+ * robustness fallback.
+ */
+const FAST_GROQ_MODELS = [
+  "openai/gpt-oss-20b",
+  "openai/gpt-oss-120b",
 ] as const;
 
 function getConfiguredProvider(): AIProvider {
@@ -208,6 +235,45 @@ export async function createAICompletion(
             modelName
           );
 
+        if (options.onToken) {
+          const langChainStream =
+            await model.stream(
+              messages,
+              {
+                maxTokens,
+              }
+            );
+
+          let streamedContent = "";
+
+          for await (const chunk of langChainStream) {
+            if (
+              typeof chunk.content ===
+              "string"
+            ) {
+              if (chunk.content) {
+                streamedContent +=
+                  chunk.content;
+
+                options.onToken(
+                  chunk.content
+                );
+              }
+            }
+          }
+
+          console.log(
+            `AI completion provider: OpenRouter | Model: ${modelName} | streamed`
+          );
+
+          return {
+            provider:
+              "openrouter",
+            model: modelName,
+            content: streamedContent,
+          };
+        }
+
         const response =
           await model.invoke(
             messages,
@@ -250,8 +316,78 @@ export async function createAICompletion(
 
   let lastError: unknown;
 
-  for (const model of GROQ_MODELS) {
+  const groqModels =
+    options.preferFastModel
+      ? FAST_GROQ_MODELS
+      : GROQ_MODELS;
+
+  for (const model of groqModels) {
     try {
+      if (options.onToken) {
+        /*
+         * True streaming path: token deltas are
+         * forwarded to the caller while the
+         * complete text is still accumulated and
+         * returned, so graph state and callers
+         * behave exactly as before.
+         */
+        const stream =
+          await groq.chat.completions.create({
+            model,
+            temperature,
+            max_tokens: maxTokens,
+            messages,
+            stream: true,
+          });
+
+        let content = "";
+
+        try {
+          for await (const chunk of stream) {
+            const delta =
+              chunk.choices[0]?.delta
+                ?.content;
+
+            if (delta) {
+              content += delta;
+
+              options.onToken(delta);
+            }
+          }
+        } catch (streamError) {
+          if (content.length > 0) {
+            /*
+             * Deltas already reached the user -
+             * restarting on another model would
+             * duplicate the answer. Surface the
+             * failure instead of falling back.
+             */
+            console.error(
+              `Groq stream interrupted mid-answer: ${model}`,
+              streamError
+            );
+
+            return {
+              provider: "groq",
+              model,
+              content,
+            };
+          }
+
+          throw streamError;
+        }
+
+        console.log(
+          `AI completion provider: Groq | Model: ${model} | streamed`
+        );
+
+        return {
+          provider: "groq",
+          model,
+          content,
+        };
+      }
+
       const completion =
         await groq.chat.completions.create({
           model,
@@ -296,7 +432,17 @@ export async function createAIStructuredCompletion<
 >(
   messages: ChatMessage[],
   schema: ZodType<T>,
-  schemaName: string
+  schemaName: string,
+
+  /*
+   * Structured control-plane calls (routing,
+   * query rewrites) can run on the small
+   * fast model without hurting answer
+   * quality.
+   */
+  options?: {
+    preferFastModel?: boolean;
+  }
 ): Promise<AIStructuredCompletionResult<T>> {
   const provider =
     getConfiguredProvider();
@@ -364,7 +510,12 @@ return {
 
   let lastError: unknown;
 
-  for (const model of GROQ_MODELS) {
+  const groqModels =
+    options?.preferFastModel
+      ? FAST_GROQ_MODELS
+      : GROQ_MODELS;
+
+  for (const model of groqModels) {
     try {
       const completion =
         await groq.chat.completions.create({

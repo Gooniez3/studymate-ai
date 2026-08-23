@@ -1,8 +1,6 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { embedTexts } from "@/lib/rag/embeddings";
-import { saveChunkEmbeddings } from "@/lib/rag/vector-store";
 import {
   retrieveDocumentChunks,
   type RetrievedChunk,
@@ -30,6 +28,15 @@ import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import {
   studyMateGraph,
 } from "@/lib/ai/graph/graph";
+
+import {
+  extractPdfPages,
+  PdfExtractionError,
+} from "@/lib/rag/pdf-extract";
+
+import {
+  savePdfDocument,
+} from "@/lib/rag/pdf-ingest";
 
 type ClientMessage = {
   role: "user" | "assistant";
@@ -101,92 +108,40 @@ type ExtractedPdfPage = {
   text: string;
 };
 
-type PdfTextItem = {
-  str?: string;
-  transform?: number[];
-};
+/*
+ * Friendly user-facing failures must reach the
+ * frontend through the normal streaming protocol,
+ * otherwise the client throws "No stream returned."
+ * when a non-200/plain-error response arrives.
+ */
+function streamTextResponse(
+  text: string
+): Response {
+  const encoder =
+    new TextEncoder();
 
-async function extractPdfPages(
-  file: File
-): Promise<ExtractedPdfPage[]> {
-  const arrayBuffer =
-    await file.arrayBuffer();
+  const stream =
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(text)
+        );
 
-  const buffer =
-    Buffer.from(arrayBuffer);
+        controller.close();
+      },
+    });
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pdfParse =
-    require("pdf-parse/lib/pdf-parse.js");
+  return new Response(stream, {
+    headers: {
+      "Content-Type":
+        "text/plain; charset=utf-8",
 
-  const pages: ExtractedPdfPage[] = [];
+      "Cache-Control":
+        "no-cache, no-transform",
 
-  let pageNumber = 0;
-
-  await pdfParse(buffer, {
-    pagerender: async (pageData: {
-      getTextContent: () => Promise<{
-        items: PdfTextItem[];
-      }>;
-    }) => {
-      pageNumber += 1;
-
-      const textContent =
-        await pageData.getTextContent();
-
-      let lastY: number | null = null;
-      let pageText = "";
-
-      for (const item of textContent.items) {
-        const text =
-          typeof item.str === "string"
-            ? item.str
-            : "";
-
-        if (!text) {
-          continue;
-        }
-
-        const currentY =
-          Array.isArray(item.transform)
-            ? item.transform[5]
-            : null;
-
-        if (
-          lastY !== null &&
-          currentY !== null &&
-          currentY !== lastY
-        ) {
-          pageText += "\n";
-        } else if (pageText) {
-          pageText += " ";
-        }
-
-        pageText += text;
-
-        if (currentY !== null) {
-          lastY = currentY;
-        }
-      }
-
-      const cleanedText =
-        pageText
-          .replace(/[ \t]+\n/g, "\n")
-          .replace(/\n{3,}/g, "\n\n")
-          .trim();
-
-      pages.push({
-        pageNumber,
-        text: cleanedText,
-      });
-
-      // pdf-parse expects the page renderer
-      // to return text.
-      return cleanedText;
+      Connection: "keep-alive",
     },
   });
-
-  return pages;
 }
 
 async function parseRequest(req: NextRequest): Promise<{
@@ -360,7 +315,14 @@ const rewritePrompt: ChatMessage[] = [
   await createAIStructuredCompletion(
     rewritePrompt,
     searchRewriteSchema,
-    "search_query_rewrite"
+    "search_query_rewrite",
+    {
+      /*
+       * Query rewriting is control-plane work -
+       * the small fast model is sufficient.
+       */
+      preferFastModel: true,
+    }
   );
 
 const queries =
@@ -573,6 +535,15 @@ export async function POST(req: NextRequest) {
     let pdfContext = "";
     let pdfFileName = "";
 
+    /*
+     * Document facts used by the router:
+     * which documents actually exist for this
+     * chat and whether a PDF was attached to
+     * this very request.
+     */
+    let documentNames: string[] = [];
+    let documentAttachedThisTurn = false;
+
     if (file) {
       if (file.type !== "application/pdf") {
         return new Response(
@@ -596,8 +567,54 @@ export async function POST(req: NextRequest) {
 
       console.log("Starting PDF extraction");
 
-      const pages =
-  await extractPdfPages(file);
+      const extractionStartedAt =
+        performance.now();
+
+      /*
+       * Extraction failures are user-facing
+       * conditions, not server errors: they are
+       * reported through the normal streaming
+       * protocol so the frontend renders the
+       * message instead of "No stream returned."
+       */
+      let pages: ExtractedPdfPage[];
+
+      try {
+        pages =
+          await extractPdfPages(file);
+      } catch (error) {
+        if (
+          error instanceof
+          PdfExtractionError
+        ) {
+          console.error(
+            "PDF extraction failed:",
+            error.message,
+            error.reason
+          );
+
+          if (
+            error.reason === "no-text"
+          ) {
+            return streamTextResponse(
+              "This PDF looks image-based. Text could not be extracted. Try a text-based PDF or run OCR on it first."
+            );
+          }
+
+          return streamTextResponse(
+            "I couldn't read this PDF. The file may be damaged or use an unsupported PDF format. Try re-exporting or printing it to PDF and upload it again."
+          );
+        }
+
+        throw error;
+      }
+
+      console.log(
+        `[perf] pdf extraction: ${Math.round(
+          performance.now() -
+            extractionStartedAt
+        )}ms`
+      );
 
 console.log(
   "PDF extraction complete:",
@@ -613,11 +630,8 @@ const usablePages =
   );
 
 if (usablePages.length === 0) {
-  return new Response(
-    "This PDF looks image-based. Text could not be extracted.",
-    {
-      status: 400,
-    }
+  return streamTextResponse(
+    "This PDF looks image-based. Text could not be extracted. Try a text-based PDF or run OCR on it first."
   );
 }
 
@@ -641,11 +655,8 @@ const pageAwareChunks =
   );
 
 if (pageAwareChunks.length === 0) {
-  return new Response(
-    "No usable text chunks could be created from this PDF.",
-    {
-      status: 400,
-    }
+  return streamTextResponse(
+    "No readable text could be prepared from this PDF. Try re-exporting it and upload it again."
   );
 }
 
@@ -658,107 +669,71 @@ console.log(
 );
 
 if (chatId) {
-  const existingChat =
-    await prisma.chat.findFirst({
-      where: {
-        id: chatId,
-        userId: session.user.id,
-      },
-    });
+  try {
+    const savedDocument =
+      await savePdfDocument({
+        chatId,
 
-  if (existingChat) {
-    const document =
-      await prisma.document.create({
-        data: {
-          chatId: existingChat.id,
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          extractedText,
+        userId:
+          session.user.id,
 
-          chunks: {
-            create:
-              pageAwareChunks.map(
-                (chunk, index) => ({
-                  chunkIndex: index,
-                  pageNumber:
-                    chunk.pageNumber,
-                  content:
-                    chunk.content,
-                })
-              ),
-          },
-        },
+        fileName: file.name,
 
-        include: {
-          chunks: {
-            orderBy: {
-              chunkIndex: "asc",
-            },
-          },
-        },
+        fileType: file.type,
+
+        fileSize: file.size,
+
+        extractedText,
+
+        pageChunks:
+          pageAwareChunks,
       });
 
-    console.log(
-      "Generating embeddings for document chunks..."
-    );
+    if (savedDocument) {
+      documentNames = [
+        savedDocument.name,
+      ];
 
-    const embeddings =
-      await embedTexts(
-        document.chunks.map(
-          (chunk) =>
-            chunk.content
-        )
-      );
+      documentAttachedThisTurn =
+        true;
 
-    if (
-      embeddings.length !==
-      document.chunks.length
-    ) {
-      throw new Error(
-        `Embedding count mismatch. Expected ${document.chunks.length}, received ${embeddings.length}.`
+      console.log(
+        "RAG document stored:",
+        {
+          documentId:
+            savedDocument.documentId,
+
+          name:
+            savedDocument.name,
+
+          characters:
+            extractedText.length,
+
+          pages:
+            usablePages.length,
+
+          chunks:
+            savedDocument.chunkCount,
+        }
       );
     }
-
-    await saveChunkEmbeddings(
-      document.chunks.map(
-        (chunk, index) => ({
-          id: chunk.id,
-          embedding:
-            embeddings[index],
-        })
-      )
+  } catch (error) {
+    /*
+     * savePdfDocument rolls back partial
+     * records internally; here we surface a
+     * friendly streaming message instead of
+     * a generic 500.
+     */
+    console.error(
+      "PDF ingestion failed:",
+      error
     );
 
-    console.log(
-      "Chunk embeddings stored:",
-      {
-        documentId:
-          document.id,
-        chunks:
-          document.chunks.length,
-        embeddings:
-          embeddings.length,
-      }
-    );
-
-    console.log(
-      "RAG document stored:",
-      {
-        documentId:
-          document.id,
-        name:
-          document.name,
-        characters:
-          extractedText.length,
-        pages:
-          usablePages.length,
-        chunks:
-          document.chunks.length,
-      }
+    return streamTextResponse(
+      "I read your PDF but couldn't prepare it for search. The upload was not saved - please try again."
     );
   }
- }
+}
 }
      if (!file && chatId) {
   const existingChat =
@@ -783,9 +758,12 @@ if (chatId) {
     existingChat?.documents ?? [];
 
   if (savedDocs.length > 0) {
-    pdfFileName = savedDocs
-      .map((doc) => doc.name)
-      .join(", ");
+    documentNames = savedDocs
+      .map((doc) => doc.name);
+
+    pdfFileName = documentNames.join(
+      ", "
+    );
   }
 }
 
@@ -822,140 +800,248 @@ const graphThreadId =
     ? `chat:${chatId}`
     : `ephemeral:${session.user.id}:${crypto.randomUUID()}`;
 
-const graphResult =
-  await studyMateGraph.invoke(
-    {
-      messages: graphMessages,
+const requestStartedAt =
+  performance.now();
 
-      chatId,
-
-      mode:
-        mode === "exam" ||
-        mode === "assignment" ||
-        mode === "career"
-          ? mode
-          : "default",
-
-      webSearchEnabled,
-
-      route: "direct",
-
-      documentContext: "",
-
-      webContext: "",
-
-      verificationContext: "",
-
-      response: "",
-
-      webSources: [],
-
-documentCitations: [],
-
-quizTopic: "",
-
-quizContext: "",
-
-quizData: null,
-
-error: null,
-    },
-    {
-      configurable: {
-        thread_id: graphThreadId,
-      },
-    }
-  );
-
-console.log(
-  "API LangGraph result:",
-  {
-    route: graphResult.route,
-    responseLength:
-      graphResult.response.length,
-    webSources:
-      graphResult.webSources?.length ??
-      0,
-    documentCitations:
-      graphResult.documentCitations
-        ?.length ?? 0,
-    error: graphResult.error,
-  }
-);
-    const graphEncoder =
+const graphEncoder =
   new TextEncoder();
 
+/*
+ * True streaming setup: the Response is
+ * returned immediately, and answer tokens
+ * are forwarded into it by the graph's
+ * response node through the configurable
+ * onToken callback while generation is
+ * still running.
+ */
+/*
+ * Holder object defeats TypeScript control-flow
+ * narrowing across closures (the controller is
+ * assigned inside the stream's start callback).
+ */
+const streamState: {
+  controller: ReadableStreamDefaultController<Uint8Array> | null;
+} = {
+  controller: null,
+};
+
+const appendToStream = (
+  text: string
+) => {
+  const controller =
+    streamState.controller;
+
+  if (!controller) {
+    return;
+  }
+
+  try {
+    controller.enqueue(
+      graphEncoder.encode(text)
+    );
+  } catch {
+    /*
+     * Client disconnected mid-stream -
+     * stop writing but let the graph run
+     * to completion so checkpoints stay
+     * consistent.
+     */
+    streamState.controller =
+      null;
+  }
+};
+
+let streamedAnyToken = false;
+
 const graphReadableStream =
-  new ReadableStream({
+  new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(
-        graphEncoder.encode(
-          graphResult.response
-        )
-      );
+      streamState.controller =
+        controller;
+    },
 
-      if (
-        graphResult.webSources &&
-        graphResult.webSources.length > 0
-      ) {
-        const sourcesBlock =
-          graphResult.webSources
-            .map(
-              (source) =>
-                `- [${source.title}](${source.url})`
-            )
-            .join("\n");
-
-        controller.enqueue(
-          graphEncoder.encode(
-            `\n\n---\n\n**Sources**\n\n${sourcesBlock}`
-          )
-        );
-      }
-
-      if (
-        graphResult.documentCitations &&
-        graphResult.documentCitations
-          .length > 0
-      ) {
-        const documentSourcesBlock =
-          graphResult.documentCitations
-            .map(
-              (citation) =>
-                `- [${citation.evidenceNumber}] ${citation.documentName}${
-                  citation.pageNumber !==
-                  null
-                    ? ` · Page ${citation.pageNumber}`
-                    : ""
-                }`
-            )
-            .join("\n");
-
-        controller.enqueue(
-          graphEncoder.encode(
-            `\n\n---\n\n**Document Sources**\n\n${documentSourcesBlock}`
-          )
-        );
-      }
-      if (
-  graphResult.quizData
-) {
-  const quizMetadata =
-    JSON.stringify({
-      type: "quiz",
-      data: graphResult.quizData,
-    });
-
-  controller.enqueue(
-    graphEncoder.encode(
-      `\n\n__STUDYMATE_QUIZ__${quizMetadata}__END_STUDYMATE_QUIZ__`
-    )
-  );
-}
-
-      controller.close();
+    cancel() {
+      streamState.controller =
+        null;
     },
   });
+
+void (async () => {
+  try {
+    const graphResult =
+      await studyMateGraph.invoke(
+        {
+          messages: graphMessages,
+
+          chatId,
+
+          mode:
+            mode === "exam" ||
+            mode === "assignment" ||
+            mode === "career"
+              ? mode
+              : "default",
+
+          webSearchEnabled,
+
+          /*
+           * `route` is intentionally NOT reset
+           * here: the checkpointed value from the
+           * previous turn is what allows the
+           * router to detect document follow-ups.
+           * The router always sets a fresh route.
+           */
+
+          documentNames,
+
+          documentAttachedThisTurn,
+
+          documentContext: "",
+
+          webContext: "",
+
+          verificationContext: "",
+
+          response: "",
+
+          webSources: [],
+
+          documentCitations: [],
+
+          quizTopic: "",
+
+          quizContext: "",
+
+          quizData: null,
+
+          error: null,
+        },
+        {
+          configurable: {
+            thread_id:
+              graphThreadId,
+
+            onToken: (delta: string) => {
+              streamedAnyToken =
+                true;
+
+              appendToStream(delta);
+            },
+          },
+        }
+      );
+
+    console.log(
+      "API LangGraph result:",
+      {
+        route: graphResult.route,
+        responseLength:
+          graphResult.response
+            .length,
+        webSources:
+          graphResult.webSources
+            ?.length ?? 0,
+        documentCitations:
+          graphResult.documentCitations
+            ?.length ?? 0,
+        error: graphResult.error,
+      }
+    );
+
+    console.log(
+      `[perf] total request: ${Math.round(
+        performance.now() -
+          requestStartedAt
+      )}ms`
+    );
+
+    /*
+     * Non-streamed answers (quiz summaries,
+     * graceful retrieval-error replies) are
+     * short - send them in one piece so the
+     * existing UI protocol stays intact.
+     */
+    if (
+      !streamedAnyToken &&
+      graphResult.response
+    ) {
+      appendToStream(
+        graphResult.response
+      );
+    }
+
+    if (
+      graphResult.webSources &&
+      graphResult.webSources.length > 0
+    ) {
+      const sourcesBlock =
+        graphResult.webSources
+          .map(
+            (source) =>
+              `- [${source.title}](${source.url})`
+          )
+          .join("\n");
+
+      appendToStream(
+        `\n\n---\n\n**Sources**\n\n${sourcesBlock}`
+      );
+    }
+
+    if (
+      graphResult.documentCitations &&
+      graphResult.documentCitations
+        .length > 0
+    ) {
+      const documentSourcesBlock =
+        graphResult.documentCitations
+          .map(
+            (citation) =>
+              `- [${citation.evidenceNumber}] ${citation.documentName}${
+                citation.pageNumber !==
+                null
+                  ? ` · Page ${citation.pageNumber}`
+                  : ""
+              }`
+          )
+          .join("\n");
+
+      appendToStream(
+        `\n\n---\n\n**Document Sources**\n\n${documentSourcesBlock}`
+      );
+    }
+
+    if (
+      graphResult.quizData
+    ) {
+      const quizMetadata =
+        JSON.stringify({
+          type: "quiz",
+          data: graphResult.quizData,
+        });
+
+      appendToStream(
+        `\n\n__STUDYMATE_QUIZ__${quizMetadata}__END_STUDYMATE_QUIZ__`
+      );
+    }
+
+    streamState.controller?.close();
+  } catch (streamError) {
+    console.error(
+      "LangGraph streaming failed:",
+      streamError
+    );
+
+    appendToStream(
+      "\n\nStudyMate AI could not complete that response. Please try again."
+    );
+
+    try {
+      streamState.controller?.close();
+    } catch {
+      // Already closed.
+    }
+  }
+})();
 
 return new Response(
   graphReadableStream,
