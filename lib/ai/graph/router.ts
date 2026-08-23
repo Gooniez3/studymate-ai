@@ -17,6 +17,7 @@ const routerSchema = z.object({
     "web",
     "quiz",
     "planner",
+    "revision",
   ]),
 
   reason: z
@@ -145,6 +146,19 @@ const SOFTWARE_CONTEXT_PATTERN =
   /\b(apps?|websites?|coding|codebase|programs?|react|python|javascript|typescript|html|css)\b/i;
 
 /*
+ * "Give me likely exam questions" is revision
+ * material (predicted question styles to
+ * study), not a request for an interactive
+ * quiz. This narrow guard keeps such
+ * phrasing out of the deterministic quiz
+ * heuristic without weakening genuine quiz
+ * requests like "quiz me" or "practice
+ * questions".
+ */
+const EXAM_QUESTION_PREDICTION_PATTERN =
+  /\b(likely|expected|possible|probable)\s+(exam\s+)?questions?\b/i;
+
+/*
  * Narrower guard for planner heuristics:
  * "Make me a Python study plan" must stay
  * deterministic, so programming languages
@@ -164,6 +178,59 @@ const EXPLICIT_PLANNER_PATTERNS = [
   /\b\d+[-\s]?(day|week|month)s?\s+(study|revision|learning)?\s?plan\b/i,
 
   /\b(prepare|create|make|draft|draw up|build|need|want)\b[^.!?\n]{0,40}\b(a |an |the |me |us )?schedule\b/i,
+];
+
+/*
+ * High-precision explicit revision triggers.
+ * Deliberately narrow: ambiguous study help
+ * ("help me study Python") still falls
+ * through to the routing LLM. "Revision
+ * plan/schedule" stays planner via the
+ * planner patterns checked before these.
+ */
+const EXPLICIT_REVISION_PATTERNS = [
+  /\bexam\s+revision\b/i,
+
+  /\brevision\s+(notes?|sheets?|summary|summaries|checklists?|materials?|guides?|packs?)\b/i,
+
+  /\b(help\s+(me\s+)?(to\s+)?|going\s+to\s+|let'?s\s+)revis(e|ing)\b/i,
+
+  /\brevis(e|ing)\s+(this|that|it|them|these|those|for)\b/i,
+
+  /\bkey\s+(things|points|concepts|ideas|formulas?|facts?|topics?)\b[^.!?\n]{0,40}\b(exam|test|revision|remember|memoriz)/i,
+
+  /\bwhat\s+(should|do)\s+i\s+(need\s+to\s+)?(remember|memoriz|know)\b[^.!?\n]{0,40}\b(exam|test|revision)\b/i,
+
+  /\bexam[-\s]focused\s+(summary|notes|overview|recap)\b/i,
+
+  /\b(likely|expected|possible|probable)\s+(exam\s+)?questions?\b/i,
+];
+
+/*
+ * Short modification requests that continue
+ * an existing revision conversation, e.g.
+ * "make it shorter", "focus more on
+ * normalization", "add common mistakes",
+ * "turn this into a one-page cheat sheet".
+ */
+const REVISION_FOLLOWUP_PATTERNS = [
+  /^(please\s+)?(make|change|adjust|reduce|extend|shrink|shorten|lengthen|compress|expand|trim|cut|keep|drop|remove|delete|replace|rewrite|reformat|turn)\b/i,
+
+  /^focus\s+more(\s+on)?\b/i,
+
+  /^(also\s+)?add\b/i,
+
+  /^(give|tell)\s+me\s+more\b/i,
+
+  /^(can\s+you\s+)?simplif/i,
+
+  /\beasier\s+to\s+(memoriz|remember|learn)\b/i,
+
+  /\bcheat\s+sheet\b/i,
+
+  /\b(low|high)[-\s]priority\b/i,
+
+  /\bmore\s+(likely\s+)?(exam\s+)?questions\b/i,
 ];
 
 /*
@@ -389,6 +456,9 @@ export async function routerNode(
     !SOFTWARE_CONTEXT_PATTERN.test(
       userMessage
     ) &&
+    !EXAM_QUESTION_PREDICTION_PATTERN.test(
+      userMessage
+    ) &&
     QUIZ_REQUEST_PATTERNS.some(
       (pattern) =>
         pattern.test(userMessage)
@@ -438,7 +508,31 @@ export async function routerNode(
     };
   }
 
-  // 3. Explicit uploaded-document reference -> document
+  // 3. Explicit exam-revision request -> revision
+  if (
+    EXPLICIT_REVISION_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "revision",
+        userMessage:
+          userMessage.slice(0, 80),
+      }
+    );
+
+    return {
+      route: "revision",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 4. Explicit uploaded-document reference -> document
   const strongUploadReference =
     STRONG_UPLOAD_PATTERNS.some(
       (pattern) =>
@@ -483,7 +577,7 @@ export async function routerNode(
     };
   }
 
-  // 4. Referential message right after attaching a PDF -> document
+  // 5. Referential message right after attaching a PDF -> document
   const shortDocumentImperative =
     /^(please\s+)?(explain|summarize|summarise|review|analyze|analyse|read)\b/i.test(
       userMessage.trim()
@@ -516,7 +610,7 @@ export async function routerNode(
     };
   }
 
-  // 5. Clear time-sensitive request -> web (skips the routing LLM)
+  // 6. Clear time-sensitive request -> web (skips the routing LLM)
   const isDocumentFollowUpShape =
     incomingPreviousRoute ===
       "document" &&
@@ -548,7 +642,7 @@ export async function routerNode(
     };
   }
 
-  // 6. Strong follow-up to the previous document-grounded answer -> document
+  // 7. Strong follow-up to the previous document-grounded answer -> document
   if (
     incomingPreviousRoute ===
       "document" &&
@@ -579,7 +673,7 @@ export async function routerNode(
     };
   }
 
-  // 7. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
+  // 8. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
   if (
     TRIVIAL_DIRECT_PATTERN.test(
       userMessage.trim()
@@ -602,7 +696,38 @@ export async function routerNode(
     };
   }
 
-  // 8. Modification follow-up to a previous plan -> planner (skips the routing LLM)
+  // 9. Modification follow-up to a previous revision -> revision (skips the routing LLM)
+  if (
+    incomingPreviousRoute ===
+      "revision" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    userMessage.trim().length <=
+      120 &&
+    REVISION_FOLLOWUP_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "revision",
+        matched:
+          "revision modification follow-up",
+      }
+    );
+
+    return {
+      route: "revision",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 10. Modification follow-up to a previous plan -> planner (skips the routing LLM)
   if (
     incomingPreviousRoute ===
       "planner" &&
@@ -633,7 +758,7 @@ export async function routerNode(
     };
   }
 
-  // 9. Context-enriched routing LLM for everything else
+  // 11. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);
 
@@ -690,6 +815,21 @@ planner
   - "Make it 5 days instead" (after a plan was produced)
 - Do NOT choose planner for vague requests such as "help me study Python" when no plan or schedule is requested
 
+revision
+- The user asks for exam revision help: revision notes, revision sheets, revision summaries, revision checklists, or to revise a topic for an exam
+- The user asks what to remember, memorize, or focus on for an exam
+- The user asks for likely or expected exam questions as study material (NOT an interactive quiz)
+- The user modifies revision material created earlier in this conversation ("make it shorter", "add common mistakes", "turn this into a cheat sheet")
+- The material may be general or built from an uploaded document
+- Examples:
+  - "Help me revise recursion for my exam"
+  - "Give me exam revision notes for database normalization"
+  - "Summarize this PDF for exam revision"
+  - "What are the key things I need to remember from this PDF for the exam?"
+  - "Give me likely exam questions from these notes"
+  - "Make it shorter" (after revision material was produced)
+- Do NOT choose revision for plain explanations ("explain recursion") without revision/exam intent
+
 IMPORTANT ROUTING RULES:
 - Route based on the user's INTENT.
 
@@ -706,6 +846,21 @@ IMPORTANT ROUTING RULES:
 
 - Ambiguous study help such as "help me study Python" or "teach me databases" without a plan or schedule request is NOT planner.
 
+- Explicit exam-revision requests ("revision notes", "revision sheet", "help me revise", "key things to remember for the exam", "likely exam questions") take priority over direct and document.
+  Example:
+  "Summarize this PDF for exam revision"
+  -> revision (with document grounding handled downstream)
+
+- A scheduled plan is planner even when the word "revision" appears; revision material without a schedule is revision.
+  Example:
+  "Make me a 7-day revision plan"
+  -> planner
+
+- Interactive quizzing stays quiz even after revision material was produced.
+  Example:
+  "Quiz me on this"
+  -> quiz
+
 - Quiz intent also takes priority over document when the user asks to create a quiz FROM an uploaded document.
   Example:
   "Create 5 quiz questions from my PDF"
@@ -717,12 +872,14 @@ CONVERSATION FOLLOW-UP RULES:
 - Short follow-up messages such as "explain that more simply", "what about page 2", "what does that mean", "tell me all", or "summarize that section" usually continue the PREVIOUS exchange.
 - If the recent conversation shows the assistant just answered from the uploaded document(s), route these follow-ups as document.
 - If the recent conversation shows the assistant just produced a study plan, route modification follow-ups such as "make it shorter", "make day 3 easier", or "focus more on weak topics" as planner.
+- If the recent conversation shows the assistant just produced revision material, route modification follow-ups such as "make it shorter", "add common mistakes", or "turn this into a cheat sheet" as revision.
 - If the recent conversation was ordinary chat or a general knowledge explanation, route these follow-ups as direct.
 - Do NOT choose document merely because documents exist in the chat or because the message is short. Only choose document when the message explicitly references uploaded material OR clearly continues prior document-focused discussion.
 - General knowledge questions remain direct even when documents exist in the chat.
 - Current or time-sensitive questions remain web even when documents exist or were discussed earlier.
 - Quiz requests remain quiz regardless of conversation context.
 - Study-plan requests and plan modification follow-ups remain planner regardless of conversation context.
+- Exam-revision requests and revision modification follow-ups remain revision regardless of conversation context.
 
 - Do NOT change a document request to direct just because chatId is missing.
 
@@ -734,7 +891,7 @@ CONVERSATION FOLLOW-UP RULES:
 
 - Do not choose web just because Web Search is enabled.
 
-- If neither planner, quiz, document, nor web retrieval is necessary, choose direct.
+- If neither planner, revision, quiz, document, nor web retrieval is necessary, choose direct.
 
 - Keep the reason concise, ideally under 120 characters.
       `.trim(),

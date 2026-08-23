@@ -6,6 +6,7 @@ import {
 
 import {
   StudyMateState,
+  type DocumentCitation,
   type StudyMateGraphState,
 } from "@/lib/ai/graph/state";
 
@@ -47,6 +48,11 @@ import {
   generateStudyPlan,
   renderStudyPlanMarkdown,
 } from "@/lib/ai/agents/study-planner-agent";
+
+import {
+  generateExamRevision,
+  renderExamRevisionMarkdown,
+} from "@/lib/ai/agents/exam-revision-agent";
 
 function getLastUserText(
   state: StudyMateGraphState
@@ -671,6 +677,304 @@ export async function plannerNode(
         "I couldn't create the study plan right now. Please try again.",
       error:
         "Study plan generation failed.",
+    };
+  }
+}
+
+/*
+ * Exported for testing: scripts exercise
+ * document-grounded revision detection
+ * directly against crafted states.
+ */
+export async function revisionNode(
+  state: StudyMateGraphState
+) {
+  console.log(
+    "LangGraph node: revision"
+  );
+
+  const userMessage =
+    getLastUserText(state);
+
+  if (!userMessage.trim()) {
+    return {
+      response:
+        "Tell me what topic you'd like to revise for your exam.",
+      error:
+        "Revision topic is missing.",
+    };
+  }
+
+  try {
+    let revisionContext = "";
+
+    let revisionCitations: DocumentCitation[] =
+      [];
+
+    const lowerMessage =
+      userMessage.toLowerCase();
+
+    /*
+     * "Revision notes", "revision sheet",
+     * and similar compound phrases name the
+     * OUTPUT, not an uploaded file. They are
+     * stripped before the material scan so a
+     * request like "Give me revision notes
+     * for Python" stays general even when an
+     * unrelated PDF exists in the chat.
+     */
+    const materialScanText =
+      lowerMessage.replace(
+        /\b(revision|study)\s+(notes?|sheets?|summaries?|summary|checklists?|materials?|guides?|packs?)\b/g,
+        " "
+      );
+
+    /*
+     * Document grounding mirrors the quiz and
+     * planner nodes: only explicit
+     * uploaded-material words, page
+     * references, or conversational references
+     * combined with real document presence
+     * trigger retrieval.
+     */
+    const hasDocumentMaterial =
+      state.documentNames.length > 0 ||
+      state.documentAttachedThisTurn ||
+      state.previousRoute ===
+        "document";
+
+    const mentionsUploadedMaterial =
+      /\b(pdf|documents?|docs?|files?|uploads?|uploaded|attachments?|notes?|slides?|lectures?|materials?|readings?|chapters?)\b/.test(
+        materialScanText
+      ) ||
+      /\bpages?\s*(?:numbers?\s*)?\d+\b/.test(
+        materialScanText
+      );
+
+    const unquotedMessage = lowerMessage.replace(
+      /["'`][^"'`]*["'`]/g,
+      " "
+    );
+
+    const mentionsConversationReference =
+      /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+        unquotedMessage
+      ) ||
+      /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+        lowerMessage
+      ) ||
+      /\bjust\s+discussed\b/.test(
+        lowerMessage
+      );
+
+    const wantsDocumentRevision =
+      mentionsUploadedMaterial ||
+      (mentionsConversationReference &&
+        hasDocumentMaterial);
+
+    const retrievalStartedAt =
+      performance.now();
+
+    if (
+      wantsDocumentRevision &&
+      state.chatId
+    ) {
+      let documentResult =
+        await searchDocuments({
+          chatId:
+            state.chatId,
+          query:
+            userMessage,
+          limit: 6,
+        });
+
+      if (
+        !documentResult.success
+      ) {
+        /*
+         * Referential revision requests
+         * ("revise what we just discussed")
+         * embed poorly on their own, so retry
+         * against the most topical earlier
+         * user message.
+         */
+        const topicalUserMessage =
+          getTopicalUserText(state);
+
+        if (
+          topicalUserMessage.trim()
+        ) {
+          documentResult =
+            await searchDocuments({
+              chatId:
+                state.chatId,
+              query: `${topicalUserMessage}\n${userMessage}`,
+              limit: 6,
+            });
+        }
+      }
+
+      if (
+        !documentResult.success &&
+        state.documentNames.length > 0
+      ) {
+        documentResult =
+          await searchDocuments({
+            chatId:
+              state.chatId,
+
+            query: state.documentNames.join(
+              ", "
+            ),
+
+            limit: 6,
+          });
+      }
+
+      if (
+        documentResult.success
+      ) {
+        revisionContext =
+          documentResult.context;
+
+        revisionCitations =
+          documentResult.chunks.map(
+            (chunk) => ({
+              evidenceNumber:
+                chunk.evidenceNumber,
+
+              documentName:
+                chunk.documentName,
+
+              pageNumber:
+                chunk.pageNumber,
+            })
+          );
+      }
+
+      console.log(
+        `[perf] revision document retrieval: ${Math.round(
+          performance.now() -
+            retrievalStartedAt
+        )}ms`
+      );
+    }
+
+    console.log(
+      "Revision context selection:",
+      {
+        wantsDocumentRevision,
+        mentionsUploadedMaterial,
+        mentionsConversationReference,
+        continuesDocumentDiscussion:
+          mentionsConversationReference &&
+          hasDocumentMaterial,
+        hasContext:
+          revisionContext.length > 0,
+        contextLength:
+          revisionContext.length,
+        modifiesPreviousRevision:
+          state.revisionData !== null,
+      }
+    );
+
+    /*
+     * Follow-up modifications reuse the
+     * checkpointed previous revision output
+     * so changes such as "make it shorter"
+     * stay connected to the existing
+     * material. No separate memory system is
+     * involved.
+     */
+    const previousRevision =
+      state.revisionData;
+
+    const recentMessages = (
+      state.messages ?? []
+    ).slice(-4);
+
+    const conversation =
+      recentMessages
+        .map((message) => {
+          const type =
+            message._getType();
+
+          if (
+            type !== "human" &&
+            type !== "ai"
+          ) {
+            return null;
+          }
+
+          const content =
+            typeof message.content ===
+            "string"
+              ? message.content
+              : String(
+                  message.content
+                );
+
+          const speaker =
+            type === "human"
+              ? "USER"
+              : "ASSISTANT";
+
+          return `${speaker}: ${content
+            .replace(/\s+/g, " ")
+            .slice(0, 400)}`;
+        })
+        .filter(
+          (line): line is string =>
+            line !== null
+        )
+        .join("\n");
+
+    const revision =
+      await generateExamRevision({
+        request:
+          userMessage,
+
+        context:
+          revisionContext,
+
+        previousRevision,
+
+        conversation,
+      });
+
+    const visibleResponse =
+      renderExamRevisionMarkdown(
+        revision
+      );
+
+    return {
+      response:
+        visibleResponse,
+
+      revisionTopic:
+        userMessage,
+
+      revisionContext,
+
+      revisionData:
+        revision,
+
+      documentCitations:
+        revisionCitations,
+
+      error: null,
+    };
+  } catch (error) {
+    console.error(
+      "Revision agent failed:",
+      error
+    );
+
+    return {
+      response:
+        "I couldn't create the revision material right now. Please try again.",
+      error:
+        "Revision generation failed.",
     };
   }
 }
@@ -1433,6 +1737,10 @@ export const studyMateGraph =
       plannerNode
     )
     .addNode(
+      "revision",
+      revisionNode
+    )
+    .addNode(
       "verify_web",
       verificationNode
     )
@@ -1453,6 +1761,7 @@ export const studyMateGraph =
         web: "web",
         quiz: "quiz",
         planner: "planner",
+        revision: "revision",
       }
     )
     .addEdge(
@@ -1477,6 +1786,10 @@ export const studyMateGraph =
     )
     .addEdge(
       "planner",
+      END
+    )
+    .addEdge(
+      "revision",
       END
     )
     .addEdge(

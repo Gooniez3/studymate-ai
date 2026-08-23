@@ -918,6 +918,10 @@ void (async () => {
 
           plannerContext: "",
 
+          revisionTopic: "",
+
+          revisionContext: "",
+
           error: null,
         },
         {

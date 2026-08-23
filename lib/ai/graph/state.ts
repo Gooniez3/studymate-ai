@@ -7,12 +7,17 @@ import type {
   StudyPlanResult,
 } from "@/lib/ai/agents/study-planner-agent";
 
+import type {
+  ExamRevisionResult,
+} from "@/lib/ai/agents/exam-revision-agent";
+
 export type StudyMateRoute =
   | "direct"
   | "document"
   | "web"
   | "quiz"
-  | "planner";
+  | "planner"
+  | "revision";
 
 export type StudyMateMode =
   | "default"
@@ -171,6 +176,32 @@ plannerContext: Annotation<string>({
  */
 plannerData: Annotation<
   StudyPlanResult | null
+>({
+  reducer: (_, next) => next,
+  default: () => null,
+}),
+
+revisionTopic: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+revisionContext: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+/*
+ * Latest generated revision material.
+ * Like plannerData this is NOT reset
+ * per request, so checkpoint history
+ * keeps the previous revision output
+ * available for follow-up modifications
+ * such as "make it shorter" or "add
+ * common mistakes".
+ */
+revisionData: Annotation<
+  ExamRevisionResult | null
 >({
   reducer: (_, next) => next,
   default: () => null,

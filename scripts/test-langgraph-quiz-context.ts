@@ -102,6 +102,12 @@ function buildState(options: {
 
     plannerData: null,
 
+    revisionTopic: "",
+
+    revisionContext: "",
+
+    revisionData: null,
+
     response: "",
 
     error: null,

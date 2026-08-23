@@ -346,6 +346,12 @@ async function main() {
 
         plannerData: null,
 
+        revisionTopic: "",
+
+        revisionContext: "",
+
+        revisionData: null,
+
         response: "",
 
         error: null,

@@ -57,6 +57,14 @@ async function main() {
       documentNames: [] as string[],
       attachedThisTurn: false,
     },
+    {
+      name: "Revision",
+      message:
+        "Give me exam revision notes for database normalization.",
+      webSearchEnabled: false,
+      documentNames: [] as string[],
+      attachedThisTurn: false,
+    },
   ];
 
   for (const test of tests) {
@@ -107,6 +115,12 @@ async function main() {
         plannerContext: "",
 
         plannerData: null,
+
+        revisionTopic: "",
+
+        revisionContext: "",
+
+        revisionData: null,
 
         response: "",
 
