@@ -49,8 +49,8 @@ export default function ChatMessages({
   onQuizChange,
 }: ChatMessagesProps) {
   return (
-    <div className="flex-1 overflow-y-auto bg-white dark:bg-slate-950">
-      <div className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+    <div className="scrollbar-slim min-h-0 flex-1 overflow-y-auto bg-white dark:bg-slate-950">
+      <div className="mx-auto max-w-4xl space-y-6 px-4 py-6 md:px-6">
         {messages.map(
           (
             message,
@@ -67,10 +67,10 @@ export default function ChatMessages({
             >
               {message.role ===
                 "assistant" && (
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 p-2 text-white">
+                <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 p-1.5 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
                   <Bot
                     size={
-                      16
+                      14
                     }
                   />
                 </div>
@@ -156,10 +156,10 @@ export default function ChatMessages({
 
               {message.role ===
                 "user" && (
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-300 p-2 text-slate-700 dark:bg-slate-700 dark:text-white">
+                <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-200 p-1.5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                   <User
                     size={
-                      16
+                      14
                     }
                   />
                 </div>
@@ -171,9 +171,9 @@ export default function ChatMessages({
         {isLoading &&
           webSearchEnabled && (
             <div className="flex justify-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 p-2 text-white">
+              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 p-1.5 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
                 <Bot
-                  size={16}
+                  size={14}
                 />
               </div>
 

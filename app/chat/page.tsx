@@ -11,6 +11,7 @@ import type {
   QuizData,
 } from "@/types/chat";
 import ChatSidebar from "@/components/chat/ChatSidebar";
+import ChatHeader from "@/components/chat/ChatHeader";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
 import { useSession } from "next-auth/react";
@@ -46,7 +47,8 @@ export default function ChatPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -58,15 +60,6 @@ export default function ChatPage() {
   const ACTIVE_CHAT_KEY =
   "studymate-active-chat-id";
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    loadUserProfile();
-    loadChats();
-  }, []);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const applyTheme = (theme: AppTheme) => {
     document.documentElement.classList.remove("dark", "light", "system");
@@ -170,6 +163,20 @@ export default function ChatPage() {
     );
   }
 };
+
+  useEffect(() => {
+    // Initial data load on mount - setState here
+    // is intentional hydration of profile/chats.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadUserProfile();
+
+    loadChats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const createChatTitle = (text: string, file?: File | null) => {
     if (text.trim()) return text.trim().slice(0, 35);
@@ -919,11 +926,23 @@ const updateQuizMessage =
   }
 };
 
+  const activeChat = chatSessions.find(
+    (chat) => chat.id === activeChatId
+  );
+
+  const headerTitle = activeChat
+    ? activeChat.title
+    : activeMode
+    ? "New conversation"
+    : "New conversation";
+
   return (
-    <main className="flex h-screen overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-white">
+    <main className="flex h-dvh overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-white">
       <ChatSidebar
         sidebarOpen={sidebarOpen}
         setSidebarOpen={setSidebarOpen}
+        isMobileOpen={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
         chatSessions={chatSessions}
         activeChatId={activeChatId}
         activeMode={activeMode}
@@ -938,15 +957,12 @@ const updateQuizMessage =
         userImage={profileImage || session?.user?.image}
       />
 
-      <section className="flex max-w-full flex-1 flex-col overflow-hidden">
-        <header className="shrink-0 border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-950">
-          <h2 className="font-semibold text-slate-950 dark:text-white">
-            AI Student Assistant
-          </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Ask questions about study, exams, projects, or career preparation.
-          </p>
-        </header>
+      <section className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
+        <ChatHeader
+          title={headerTitle}
+          activeMode={activeMode}
+          onMenuClick={() => setIsMobileSidebarOpen(true)}
+        />
 
         <ChatMessages
           messages={messages}
