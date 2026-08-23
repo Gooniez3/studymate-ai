@@ -573,6 +573,15 @@ export async function POST(req: NextRequest) {
     let pdfContext = "";
     let pdfFileName = "";
 
+    /*
+     * Document facts used by the router:
+     * which documents actually exist for this
+     * chat and whether a PDF was attached to
+     * this very request.
+     */
+    let documentNames: string[] = [];
+    let documentAttachedThisTurn = false;
+
     if (file) {
       if (file.type !== "application/pdf") {
         return new Response(
@@ -699,6 +708,9 @@ if (chatId) {
         },
       });
 
+    documentNames = [document.name];
+    documentAttachedThisTurn = true;
+
     console.log(
       "Generating embeddings for document chunks..."
     );
@@ -783,9 +795,12 @@ if (chatId) {
     existingChat?.documents ?? [];
 
   if (savedDocs.length > 0) {
-    pdfFileName = savedDocs
-      .map((doc) => doc.name)
-      .join(", ");
+    documentNames = savedDocs
+      .map((doc) => doc.name);
+
+    pdfFileName = documentNames.join(
+      ", "
+    );
   }
 }
 
@@ -838,7 +853,17 @@ const graphResult =
 
       webSearchEnabled,
 
-      route: "direct",
+      /*
+       * `route` is intentionally NOT reset
+       * here: the checkpointed value from the
+       * previous turn is what allows the
+       * router to detect document follow-ups.
+       * The router always sets a fresh route.
+       */
+
+      documentNames,
+
+      documentAttachedThisTurn,
 
       documentContext: "",
 

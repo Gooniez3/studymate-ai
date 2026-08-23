@@ -53,19 +53,353 @@ function getLastUserMessage(
   return "";
 }
 
+function getConversationTranscript(
+  state: StudyMateGraphState,
+  maxEntries = 8,
+  maxCharsPerEntry = 280
+): string {
+  const messages =
+    state.messages ?? [];
+
+  const lines = messages
+    .slice(-maxEntries)
+    .map((message) => {
+      const type =
+        message._getType();
+
+      if (
+        type !== "human" &&
+        type !== "ai"
+      ) {
+        return null;
+      }
+
+      const content =
+        typeof message.content ===
+        "string"
+          ? message.content
+          : String(message.content);
+
+      const cleaned = content
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!cleaned) {
+        return null;
+      }
+
+      const speaker =
+        type === "human"
+          ? "USER"
+          : "ASSISTANT";
+
+      const truncated =
+        cleaned.length >
+        maxCharsPerEntry
+          ? `${cleaned.slice(
+              0,
+              maxCharsPerEntry
+            )}...`
+          : cleaned;
+
+      return `${speaker}: ${truncated}`;
+    })
+    .filter(
+      (line): line is string =>
+        line !== null
+    );
+
+  return lines.join("\n");
+}
+
+/*
+ * Deterministic intent heuristics.
+ *
+ * They run BEFORE the routing LLM so that
+ * unambiguous requests never depend on an
+ * extra model call, while everything else
+ * falls through to the LLM with full
+ * conversational context.
+ */
+
+const QUIZ_REQUEST_PATTERNS = [
+  /\b(quiz me|quiz us|test me|test my)\b/i,
+
+  /\bmcqs?\b/i,
+
+  /\bmultiple[-\s]?choice\b/i,
+
+  /\bpractice (questions?|tests?|problems?)\b/i,
+
+  /\b(create|make|generate|build|give me|prepare)\b[^.!?\n]{0,40}\b(a |an |the |me |some )?(quiz|quizzes|mcqs?|multiple[-\s]?choice|(practice )?questions?)\b/i,
+];
+
+/*
+ * Avoid hijacking software-development
+ * questions such as "how do I create a quiz
+ * app in react" - those are handled by the
+ * routing LLM instead.
+ */
+const SOFTWARE_CONTEXT_PATTERN =
+  /\b(apps?|websites?|coding|codebase|programs?|react|python|javascript|typescript|html|css)\b/i;
+
+const EXPLICIT_DOCUMENT_PATTERNS = [
+  /\b(my|our|his|her|their|your)\s+(uploaded\s+|attached\s+|provided\s+)?(pdf|pdfs|documents?|docs?|files?|notes?|slides?|lectures?|chapters?|materials?|readings?)\b/i,
+
+  /\b(this|that|these|those)\s+(uploaded\s+|attached\s+|provided\s+)?(pdf|document|doc|file|note|slide|lecture|chapter|material|reading)s?\b/i,
+
+  /\b(uploaded|attached|provided)\s+(pdf|document|doc|file|notes?|slides?|lectures?|chapters?|materials?|readings?)\b/i,
+
+  /\bi\s+(just\s+)?(uploaded|attached|shared|sent)\b/i,
+
+  /\bpages?\s+\d+\b/i,
+];
+
+const REFERENTIAL_MESSAGE_PATTERN =
+  /\b(this|that|it|these|those|them|the above|the same|the attached|the upload|my upload)\b/i;
+
+export function looksLikeDocumentFollowUp(
+  message: string
+): boolean {
+  const text =
+    message.trim();
+
+  if (!text) {
+    return false;
+  }
+
+  const patterns = [
+    /^(what|how)\s+about\b/i,
+
+    /^(can you |could you |please )?(explain|elaborate|expand|clarify|summarize|summarise|simplify|repeat|break down)\s+(that|this|it|them|those|these|everything|all)\b/i,
+
+    /^(can you |could you |please )?(tell me)\s+(more|all|everything|again)\b/i,
+
+    /^(say|go)\s+(that\s+)?(again|on|deeper)\b/i,
+
+    /^what\s+(does|do|was|were|is|are)\s+(that|this|it|they|those|these)\s+/i,
+
+    /^(continue|elaborate|expand)\b/i,
+
+    /^(more|why|and|also|plus)\b[\s?!.]*$/i,
+
+    /^(more)\s+(detail|details|info|information|explanations?)\b/i,
+  ];
+
+  return patterns.some(
+    (pattern) => pattern.test(text)
+  );
+}
+
+const CURRENT_INFO_PATTERN =
+  /\b(latest|current|currently|today|tonight|right now|recent|recently|news|price|prices|pricing|cost|weather|forecast|stock|stocks|exchange rate|ranking|rankings|richest|live)\b/i;
+
+const ABOUT_YOU_PATTERN =
+  /\b(you|your)\b/i;
+
+function mentionsUploadedDocument(
+  userMessage: string,
+  documentNames: string[]
+): boolean {
+  if (
+    EXPLICIT_DOCUMENT_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    return true;
+  }
+
+  return documentNames.some(
+    (name) => {
+      const stem = name
+        .trim()
+        .replace(/\.pdf$/i, "");
+
+      if (stem.length < 3) {
+        return false;
+      }
+
+      const escaped = stem.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      return new RegExp(
+        `\\b${escaped}\\b`,
+        "i"
+      ).test(userMessage);
+    }
+  );
+}
+
 export async function routerNode(
   state: StudyMateGraphState
 ): Promise<{
   route: StudyMateRoute;
+  previousRoute: StudyMateRoute | null;
 }> {
+  /*
+   * `route` still holds the previous turn's
+   * final route at this point because the
+   * API no longer resets it on invoke, so it
+   * is the authoritative "previous route"
+   * signal. It is re-published through the
+   * previousRoute channel so downstream
+   * nodes (quiz/document) can still read it
+   * after the router overwrites `route`.
+   */
+  const previousRouteAtEntry: StudyMateRoute =
+    state.route;
+
+  const incomingPreviousRoute: StudyMateRoute | null =
+    previousRouteAtEntry;
+
   const userMessage =
     getLastUserMessage(state);
 
   if (!userMessage.trim()) {
     return {
       route: "direct",
+
+      previousRoute:
+        incomingPreviousRoute,
     };
   }
+
+  const documentNames =
+    state.documentNames ?? [];
+
+  const hasDocumentContext =
+    documentNames.length > 0 ||
+    state.documentAttachedThisTurn ||
+    incomingPreviousRoute ===
+      "document";
+
+  // 1. Explicit quiz request -> quiz
+  if (
+    !SOFTWARE_CONTEXT_PATTERN.test(
+      userMessage
+    ) &&
+    QUIZ_REQUEST_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "quiz",
+        userMessage:
+          userMessage.slice(0, 80),
+      }
+    );
+
+    return {
+      route: "quiz",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 2. Explicit uploaded-document reference -> document
+  if (
+    hasDocumentContext &&
+    mentionsUploadedDocument(
+      userMessage,
+      documentNames
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "document",
+        matched:
+          "explicit document reference",
+      }
+    );
+
+    return {
+      route: "document",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 3. Referential message right after attaching a PDF -> document
+  const shortDocumentImperative =
+    /^(please\s+)?(explain|summarize|summarise|review|analyze|analyse|read)\b/i.test(
+      userMessage.trim()
+    ) && userMessage.trim().length <= 40;
+
+  if (
+    state.documentAttachedThisTurn &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    (REFERENTIAL_MESSAGE_PATTERN.test(
+      userMessage
+    ) ||
+      shortDocumentImperative)
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "document",
+        matched:
+          "reference to newly attached upload",
+      }
+    );
+
+    return {
+      route: "document",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 4. Strong follow-up to the previous document-grounded answer -> document
+  if (
+    incomingPreviousRoute ===
+      "document" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    !ABOUT_YOU_PATTERN.test(
+      userMessage
+    ) &&
+    looksLikeDocumentFollowUp(
+      userMessage
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "document",
+        matched:
+          "document-focused follow-up",
+      }
+    );
+
+    return {
+      route: "document",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 5. Context-enriched routing LLM for everything else
+  const transcript =
+    getConversationTranscript(state);
+
+  const documentsSection =
+    documentNames.length > 0
+      ? documentNames.join(", ")
+      : "None";
 
   const messages:
     ChatMessage[] = [
@@ -117,6 +451,15 @@ IMPORTANT ROUTING RULES:
 
 - If the user refers to an uploaded PDF, document, file, notes, slides, or uploaded material and is asking to summarize, explain, extract, review, or answer questions from it, choose document.
 
+CONVERSATION FOLLOW-UP RULES:
+- Short follow-up messages such as "explain that more simply", "what about page 2", "what does that mean", "tell me all", or "summarize that section" usually continue the PREVIOUS exchange.
+- If the recent conversation shows the assistant just answered from the uploaded document(s), route these follow-ups as document.
+- If the recent conversation was ordinary chat or a general knowledge explanation, route these follow-ups as direct.
+- Do NOT choose document merely because documents exist in the chat or because the message is short. Only choose document when the message explicitly references uploaded material OR clearly continues prior document-focused discussion.
+- General knowledge questions remain direct even when documents exist in the chat.
+- Current or time-sensitive questions remain web even when documents exist or were discussed earlier.
+- Quiz requests remain quiz regardless of conversation context.
+
 - Do NOT change a document request to direct just because chatId is missing.
 
 - Do NOT change a document request to direct because document retrieval may fail.
@@ -136,17 +479,26 @@ IMPORTANT ROUTING RULES:
     {
       role: "user",
       content: `
-USER MESSAGE:
-${userMessage}
+RECENT CONVERSATION:
+${transcript || "(no earlier messages)"}
 
-CHAT ID:
-${state.chatId ?? "none"}
+UPLOADED DOCUMENTS IN THIS CHAT:
+${documentsSection}
+
+FILE ATTACHED TO THIS MESSAGE:
+${state.documentAttachedThisTurn ? "yes" : "no"}
+
+PREVIOUS TURN ROUTE:
+${incomingPreviousRoute ?? "none"}
 
 WEB SEARCH ENABLED:
 ${state.webSearchEnabled}
 
 STUDYMATE MODE:
 ${state.mode}
+
+USER MESSAGE:
+${userMessage}
       `.trim(),
     },
   ];
@@ -167,6 +519,9 @@ ${state.mode}
     return {
       route:
         result.data.route,
+
+      previousRoute:
+        incomingPreviousRoute,
     };
   } catch (error) {
     console.error(
@@ -176,6 +531,9 @@ ${state.mode}
 
     return {
       route: "direct",
+
+      previousRoute:
+        incomingPreviousRoute,
     };
   }
 }
