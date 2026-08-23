@@ -96,6 +96,12 @@ function buildState(options: {
 
     quizData: null,
 
+    plannerTopic: "",
+
+    plannerContext: "",
+
+    plannerData: null,
+
     response: "",
 
     error: null,

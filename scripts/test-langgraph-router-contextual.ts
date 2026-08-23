@@ -340,6 +340,12 @@ async function main() {
 
         quizData: null,
 
+        plannerTopic: "",
+
+        plannerContext: "",
+
+        plannerData: null,
+
         response: "",
 
         error: null,

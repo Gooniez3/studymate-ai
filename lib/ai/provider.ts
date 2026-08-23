@@ -439,9 +439,17 @@ export async function createAIStructuredCompletion<
    * query rewrites) can run on the small
    * fast model without hurting answer
    * quality.
+   *
+   * maxTokens optionally raises the output
+   * ceiling for large structured payloads
+   * (e.g. study plans). When omitted, the
+   * provider default applies and existing
+   * callers are unaffected.
    */
   options?: {
     preferFastModel?: boolean;
+
+    maxTokens?: number;
   }
 ): Promise<AIStructuredCompletionResult<T>> {
   const provider =
@@ -522,6 +530,13 @@ return {
           model,
           temperature: 0,
           messages,
+
+          ...(options?.maxTokens
+            ? {
+                max_tokens:
+                  options.maxTokens,
+              }
+            : {}),
 
           response_format: {
             type: "json_schema",

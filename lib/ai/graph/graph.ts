@@ -43,6 +43,11 @@ import {
   generateQuiz,
 } from "@/lib/ai/agents/quiz-agent";
 
+import {
+  generateStudyPlan,
+  renderStudyPlanMarkdown,
+} from "@/lib/ai/agents/study-planner-agent";
+
 function getLastUserText(
   state: StudyMateGraphState
 ): string {
@@ -406,6 +411,270 @@ return {
     };
   }
 }
+/*
+ * Exported for testing: scripts exercise
+ * document-grounded planner detection
+ * directly against crafted states.
+ */
+export async function plannerNode(
+  state: StudyMateGraphState
+) {
+  console.log(
+    "LangGraph node: planner"
+  );
+
+  const userMessage =
+    getLastUserText(state);
+
+  if (!userMessage.trim()) {
+    return {
+      response:
+        "Tell me what subject you'd like a study plan for.",
+      error:
+        "Planner topic is missing.",
+    };
+  }
+
+  try {
+    let plannerContext = "";
+
+    const lowerMessage =
+      userMessage.toLowerCase();
+
+    /*
+     * Document grounding mirrors the quiz
+     * node: only explicit uploaded-material
+     * words, page references, or conversational
+     * references combined with real document
+     * presence trigger retrieval. A general
+     * request like "Make me a Python study
+     * plan" stays general even when an
+     * unrelated PDF exists in the chat.
+     */
+    const hasDocumentMaterial =
+      state.documentNames.length > 0 ||
+      state.documentAttachedThisTurn ||
+      state.previousRoute ===
+        "document";
+
+    const mentionsUploadedMaterial =
+      /\b(pdf|documents?|docs?|files?|uploads?|uploaded|attachments?|notes?|slides?|lectures?|materials?|readings?|chapters?)\b/.test(
+        lowerMessage
+      ) ||
+      /\bpages?\s*(?:numbers?\s*)?\d+\b/.test(
+        lowerMessage
+      );
+
+    const unquotedMessage = lowerMessage.replace(
+      /["'`][^"'`]*["'`]/g,
+      " "
+    );
+
+    const mentionsConversationReference =
+      /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+        unquotedMessage
+      ) ||
+      /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+        lowerMessage
+      ) ||
+      /\bjust\s+discussed\b/.test(
+        lowerMessage
+      );
+
+    const wantsDocumentPlan =
+      mentionsUploadedMaterial ||
+      (mentionsConversationReference &&
+        hasDocumentMaterial);
+
+    const retrievalStartedAt =
+      performance.now();
+
+    if (
+      wantsDocumentPlan &&
+      state.chatId
+    ) {
+      let documentResult =
+        await searchDocuments({
+          chatId:
+            state.chatId,
+          query:
+            userMessage,
+          limit: 6,
+        });
+
+      if (
+        !documentResult.success
+      ) {
+        /*
+          * Referential plan requests ("make a
+          * plan from what we just discussed")
+          * embed poorly on their own, so retry
+          * against the most topical earlier
+          * user message.
+          */
+        const topicalUserMessage =
+          getTopicalUserText(state);
+
+        if (
+          topicalUserMessage.trim()
+        ) {
+          documentResult =
+            await searchDocuments({
+              chatId:
+                state.chatId,
+              query: `${topicalUserMessage}\n${userMessage}`,
+              limit: 6,
+            });
+        }
+      }
+
+      if (
+        !documentResult.success &&
+        state.documentNames.length > 0
+      ) {
+        documentResult =
+          await searchDocuments({
+            chatId:
+              state.chatId,
+
+            query: state.documentNames.join(
+              ", "
+            ),
+
+            limit: 6,
+          });
+      }
+
+      if (
+        documentResult.success
+      ) {
+        plannerContext =
+          documentResult.context;
+      }
+
+      console.log(
+        `[perf] planner document retrieval: ${Math.round(
+          performance.now() -
+            retrievalStartedAt
+        )}ms`
+      );
+    }
+
+    console.log(
+      "Planner context selection:",
+      {
+        wantsDocumentPlan,
+        mentionsUploadedMaterial,
+        mentionsConversationReference,
+        continuesDocumentDiscussion:
+          mentionsConversationReference &&
+          hasDocumentMaterial,
+        hasContext:
+          plannerContext.length > 0,
+        contextLength:
+          plannerContext.length,
+        modifiesPreviousPlan:
+          state.plannerData !== null,
+      }
+    );
+
+    /*
+     * Follow-up modifications reuse the
+     * checkpointed previous plan so changes
+     * such as "make it 5 days instead" stay
+     * connected to the existing conversation.
+     * No separate memory system is involved.
+     */
+    const previousPlan =
+      state.plannerData;
+
+    const recentMessages = (
+      state.messages ?? []
+    ).slice(-4);
+
+    const conversation =
+      recentMessages
+        .map((message) => {
+          const type =
+            message._getType();
+
+          if (
+            type !== "human" &&
+            type !== "ai"
+          ) {
+            return null;
+          }
+
+          const content =
+            typeof message.content ===
+            "string"
+              ? message.content
+              : String(
+                  message.content
+                );
+
+          const speaker =
+            type === "human"
+              ? "USER"
+              : "ASSISTANT";
+
+          return `${speaker}: ${content
+            .replace(/\s+/g, " ")
+            .slice(0, 400)}`;
+        })
+        .filter(
+          (line): line is string =>
+            line !== null
+        )
+        .join("\n");
+
+    const plan =
+      await generateStudyPlan({
+        request:
+          userMessage,
+
+        context:
+          plannerContext,
+
+        previousPlan,
+
+        conversation,
+      });
+
+    const visibleResponse =
+      renderStudyPlanMarkdown(
+        plan
+      );
+
+    return {
+      response:
+        visibleResponse,
+
+      plannerTopic:
+        userMessage,
+
+      plannerContext,
+
+      plannerData:
+        plan,
+
+      error: null,
+    };
+  } catch (error) {
+    console.error(
+      "Planner agent failed:",
+      error
+    );
+
+    return {
+      response:
+        "I couldn't create the study plan right now. Please try again.",
+      error:
+        "Study plan generation failed.",
+    };
+  }
+}
+
 /*
  * Simple dynamic output budget: concise
  * requests get fewer tokens, explicit
@@ -1160,6 +1429,10 @@ export const studyMateGraph =
       quizNode
     )
     .addNode(
+      "planner",
+      plannerNode
+    )
+    .addNode(
       "verify_web",
       verificationNode
     )
@@ -1179,6 +1452,7 @@ export const studyMateGraph =
         document: "document",
         web: "web",
         quiz: "quiz",
+        planner: "planner",
       }
     )
     .addEdge(
@@ -1199,6 +1473,10 @@ export const studyMateGraph =
     )
     .addEdge(
       "quiz",
+      END
+    )
+    .addEdge(
+      "planner",
       END
     )
     .addEdge(

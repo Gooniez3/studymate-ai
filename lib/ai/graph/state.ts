@@ -3,11 +3,16 @@ import {
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
+import type {
+  StudyPlanResult,
+} from "@/lib/ai/agents/study-planner-agent";
+
 export type StudyMateRoute =
   | "direct"
   | "document"
   | "web"
-  | "quiz";
+  | "quiz"
+  | "planner";
 
 export type StudyMateMode =
   | "default"
@@ -142,6 +147,31 @@ quizContext: Annotation<string>({
 }),
 
 quizData: Annotation<QuizData | null>({
+  reducer: (_, next) => next,
+  default: () => null,
+}),
+
+plannerTopic: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+plannerContext: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+/*
+ * Latest generated study plan. Unlike the
+ * other planner fields this is NOT reset
+ * per request, so checkpoint history keeps
+ * the previous plan available for
+ * follow-up modifications such as "make it
+ * 5 days instead".
+ */
+plannerData: Annotation<
+  StudyPlanResult | null
+>({
   reducer: (_, next) => next,
   default: () => null,
 }),

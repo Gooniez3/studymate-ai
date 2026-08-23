@@ -16,6 +16,7 @@ const routerSchema = z.object({
     "document",
     "web",
     "quiz",
+    "planner",
   ]),
 
   reason: z
@@ -142,6 +143,54 @@ const QUIZ_REQUEST_PATTERNS = [
  */
 const SOFTWARE_CONTEXT_PATTERN =
   /\b(apps?|websites?|coding|codebase|programs?|react|python|javascript|typescript|html|css)\b/i;
+
+/*
+ * Narrower guard for planner heuristics:
+ * "Make me a Python study plan" must stay
+ * deterministic, so programming languages
+ * alone must not suppress it. Only clear
+ * software-product phrasing does.
+ */
+const PLANNER_SOFTWARE_CONTEXT_PATTERN =
+  /\b(apps?|websites?|webapps?|web apps?|chrome extensions?|browser extensions?)\b/i;
+
+const EXPLICIT_PLANNER_PATTERNS = [
+  /\b(study|revision|learning|exam|prep|preparation)\s+(plan|schedule|timetable)\b/i,
+
+  /\bplan\s+(my|the|our|a)\s+(study|studying|revision|learning|prep|preparation)\b/i,
+
+  /\b(make|create|give|draft|prepare|build|draw up|put together)\b[^.!?\n]{0,50}\b\d+[-\s]?(day|week|month)s?\b[^.!?\n]{0,30}\bplan\b/i,
+
+  /\b\d+[-\s]?(day|week|month)s?\s+(study|revision|learning)?\s?plan\b/i,
+
+  /\b(prepare|create|make|draft|draw up|build|need|want)\b[^.!?\n]{0,40}\b(a |an |the |me |us )?schedule\b/i,
+];
+
+/*
+ * Short modification requests that continue
+ * an existing planner conversation, e.g.
+ * "make it 5 days instead", "I only have 2
+ * hours per day", "add quizzes".
+ */
+const PLANNER_FOLLOWUP_PATTERNS = [
+  /^(please\s+)?(make|change|adjust|reduce|extend|shrink|shorten|lengthen|compress|stretch|shift|move|keep|drop|remove|swap)\b/i,
+
+  /^focus\s+more\b/i,
+
+  /^(also\s+)?add\b/i,
+
+  /\b(only|just)\s+have\s+\d+\b/i,
+
+  /\b\d+\s*(hours?|hrs?|minutes?|mins?)\s+(a|per)\s+day\b/i,
+
+  /\bper day\b/i,
+
+  /\bweekends?\b/i,
+
+  /\bday\s*\d+\b/i,
+
+  /\binstead\b/i,
+];
 
 const EXPLICIT_DOCUMENT_PATTERNS = [
   /\b(my|our|his|her|their|your)\s+(uploaded\s+|attached\s+|provided\s+)?(pdf|pdfs|documents?|docs?|files?|notes?|slides?|lectures?|chapters?|materials?|readings?)\b/i,
@@ -362,7 +411,34 @@ export async function routerNode(
     };
   }
 
-  // 2. Explicit uploaded-document reference -> document
+  // 2. Explicit study-plan request -> planner
+  if (
+    !PLANNER_SOFTWARE_CONTEXT_PATTERN.test(
+      userMessage
+    ) &&
+    EXPLICIT_PLANNER_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "planner",
+        userMessage:
+          userMessage.slice(0, 80),
+      }
+    );
+
+    return {
+      route: "planner",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 3. Explicit uploaded-document reference -> document
   const strongUploadReference =
     STRONG_UPLOAD_PATTERNS.some(
       (pattern) =>
@@ -407,7 +483,7 @@ export async function routerNode(
     };
   }
 
-  // 3. Referential message right after attaching a PDF -> document
+  // 4. Referential message right after attaching a PDF -> document
   const shortDocumentImperative =
     /^(please\s+)?(explain|summarize|summarise|review|analyze|analyse|read)\b/i.test(
       userMessage.trim()
@@ -440,7 +516,7 @@ export async function routerNode(
     };
   }
 
-  // 4. Clear time-sensitive request -> web (skips the routing LLM)
+  // 5. Clear time-sensitive request -> web (skips the routing LLM)
   const isDocumentFollowUpShape =
     incomingPreviousRoute ===
       "document" &&
@@ -472,7 +548,7 @@ export async function routerNode(
     };
   }
 
-  // 5. Strong follow-up to the previous document-grounded answer -> document
+  // 6. Strong follow-up to the previous document-grounded answer -> document
   if (
     incomingPreviousRoute ===
       "document" &&
@@ -503,7 +579,7 @@ export async function routerNode(
     };
   }
 
-  // 6. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
+  // 7. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
   if (
     TRIVIAL_DIRECT_PATTERN.test(
       userMessage.trim()
@@ -526,7 +602,38 @@ export async function routerNode(
     };
   }
 
-  // 7. Context-enriched routing LLM for everything else
+  // 8. Modification follow-up to a previous plan -> planner (skips the routing LLM)
+  if (
+    incomingPreviousRoute ===
+      "planner" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    userMessage.trim().length <=
+      100 &&
+    PLANNER_FOLLOWUP_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "planner",
+        matched:
+          "planner modification follow-up",
+      }
+    );
+
+    return {
+      route: "planner",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 9. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);
 
@@ -571,12 +678,33 @@ quiz
   - "Create a quiz from my uploaded PDF"
   - "Give me practice questions about Aurora Notebook"
 
+planner
+- The user asks for a study plan, revision plan, learning plan, study schedule, or timetable
+- The user asks to plan their studying or revision for an exam, subject, or deadline
+- The user modifies a plan that was created earlier in this conversation ("make it 5 days instead", "I only have 2 hours per day", "add quizzes")
+- The plan may be general or built from an uploaded document
+- Examples:
+  - "Make me a 7-day study plan for data structures"
+  - "I have my database exam next Friday. Make me a revision plan."
+  - "Create a 2-week revision schedule from these notes"
+  - "Make it 5 days instead" (after a plan was produced)
+- Do NOT choose planner for vague requests such as "help me study Python" when no plan or schedule is requested
+
 IMPORTANT ROUTING RULES:
 - Route based on the user's INTENT.
 
 - If the user explicitly asks for a quiz, test, MCQs, practice questions, or asks to be tested, choose quiz.
 
 - Quiz intent takes priority over direct.
+
+- If the user asks for a study plan, revision plan, learning plan, study schedule, or to plan their studying, choose planner.
+
+- Planner intent takes priority over direct and document when the user asks to create a plan FROM an uploaded document.
+  Example:
+  "Create a study plan from my PDF"
+  -> planner
+
+- Ambiguous study help such as "help me study Python" or "teach me databases" without a plan or schedule request is NOT planner.
 
 - Quiz intent also takes priority over document when the user asks to create a quiz FROM an uploaded document.
   Example:
@@ -588,11 +716,13 @@ IMPORTANT ROUTING RULES:
 CONVERSATION FOLLOW-UP RULES:
 - Short follow-up messages such as "explain that more simply", "what about page 2", "what does that mean", "tell me all", or "summarize that section" usually continue the PREVIOUS exchange.
 - If the recent conversation shows the assistant just answered from the uploaded document(s), route these follow-ups as document.
+- If the recent conversation shows the assistant just produced a study plan, route modification follow-ups such as "make it shorter", "make day 3 easier", or "focus more on weak topics" as planner.
 - If the recent conversation was ordinary chat or a general knowledge explanation, route these follow-ups as direct.
 - Do NOT choose document merely because documents exist in the chat or because the message is short. Only choose document when the message explicitly references uploaded material OR clearly continues prior document-focused discussion.
 - General knowledge questions remain direct even when documents exist in the chat.
 - Current or time-sensitive questions remain web even when documents exist or were discussed earlier.
 - Quiz requests remain quiz regardless of conversation context.
+- Study-plan requests and plan modification follow-ups remain planner regardless of conversation context.
 
 - Do NOT change a document request to direct just because chatId is missing.
 
@@ -604,7 +734,7 @@ CONVERSATION FOLLOW-UP RULES:
 
 - Do not choose web just because Web Search is enabled.
 
-- If neither quiz, document, nor web retrieval is necessary, choose direct.
+- If neither planner, quiz, document, nor web retrieval is necessary, choose direct.
 
 - Keep the reason concise, ideally under 120 characters.
       `.trim(),

@@ -914,6 +914,10 @@ void (async () => {
 
           quizData: null,
 
+          plannerTopic: "",
+
+          plannerContext: "",
+
           error: null,
         },
         {

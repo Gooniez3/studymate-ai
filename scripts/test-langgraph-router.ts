@@ -49,6 +49,14 @@ async function main() {
       documentNames: [] as string[],
       attachedThisTurn: false,
     },
+    {
+      name: "Planner",
+      message:
+        "Make me a 7-day study plan for data structures.",
+      webSearchEnabled: false,
+      documentNames: [] as string[],
+      attachedThisTurn: false,
+    },
   ];
 
   for (const test of tests) {
@@ -93,6 +101,12 @@ async function main() {
         quizContext: "",
 
         quizData: null,
+
+        plannerTopic: "",
+
+        plannerContext: "",
+
+        plannerData: null,
 
         response: "",
 
