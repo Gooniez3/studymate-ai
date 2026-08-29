@@ -111,6 +111,12 @@ function buildState(options: {
       (options.revisionData as StudyMateGraphState["revisionData"]) ??
       null,
 
+    assignmentTopic: "",
+
+    assignmentContext: "",
+
+    assignmentData: null,
+
     response: "",
 
     error: null,
@@ -1132,6 +1138,10 @@ Inventory in CloudSync tracks shared storage quotas per team and raises alerts w
             revisionTopic: "",
 
             revisionContext: "",
+
+            assignmentTopic: "",
+
+            assignmentContext: "",
 
             error: null,
           } as Parameters<

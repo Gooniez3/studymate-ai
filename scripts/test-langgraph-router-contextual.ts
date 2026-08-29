@@ -352,6 +352,12 @@ async function main() {
 
         revisionData: null,
 
+        assignmentTopic: "",
+
+        assignmentContext: "",
+
+        assignmentData: null,
+
         response: "",
 
         error: null,

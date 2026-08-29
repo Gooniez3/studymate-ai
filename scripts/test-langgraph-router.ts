@@ -65,6 +65,14 @@ async function main() {
       documentNames: [] as string[],
       attachedThisTurn: false,
     },
+    {
+      name: "Assignment",
+      message:
+        "Help me understand this assignment.",
+      webSearchEnabled: false,
+      documentNames: [] as string[],
+      attachedThisTurn: false,
+    },
   ];
 
   for (const test of tests) {
@@ -121,6 +129,12 @@ async function main() {
         revisionContext: "",
 
         revisionData: null,
+
+        assignmentTopic: "",
+
+        assignmentContext: "",
+
+        assignmentData: null,
 
         response: "",
 

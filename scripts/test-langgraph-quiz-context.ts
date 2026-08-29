@@ -32,11 +32,22 @@ function buildState(options: {
     | "document"
     | "web"
     | "quiz"
+    | "revision"
+    | "planner"
+    | "assignment"
     | null;
 
   documentNames?: string[];
 
   attachedThisTurn?: boolean;
+
+  revisionTopic?: string;
+
+  revisionContext?: string;
+
+  plannerTopic?: string;
+
+  assignmentTopic?: string;
 }) {
   const messages = (
     options.history ?? []
@@ -102,11 +113,20 @@ function buildState(options: {
 
     plannerData: null,
 
-    revisionTopic: "",
+    revisionTopic:
+      options.revisionTopic ?? "",
 
-    revisionContext: "",
+    revisionContext:
+      options.revisionContext ?? "",
 
     revisionData: null,
+
+    assignmentTopic:
+      options.assignmentTopic ?? "",
+
+    assignmentContext: "",
+
+    assignmentData: null,
 
     response: "",
 
@@ -261,13 +281,26 @@ Inventory management in TechPoint POS tracks stock levels automatically and rais
       previousRoute?:
         | "document"
         | "direct"
+        | "revision"
+        | "planner"
+        | "assignment"
         | null;
 
       chatId: string;
 
       documentNames?: string[];
 
+      revisionTopic?: string;
+
+      revisionContext?: string;
+
+      plannerTopic?: string;
+
+      assignmentTopic?: string;
+
       expectDocumentContext: boolean;
+
+      expectResolvedTopic?: string;
     };
 
     const quizCases: QuizCase[] = [
@@ -437,6 +470,119 @@ Inventory management in TechPoint POS tracks stock levels automatically and rais
 
         expectDocumentContext: false,
       },
+      {
+        name: "6. Revision → Quiz: 'quiz me on it' resolves to revision topic (no doc context)",
+
+        message:
+          "Give me 3 quiz questions for it",
+
+        history: [
+          {
+            role: "user",
+
+            content:
+              "Help me revise JavaScript for my exam.",
+          },
+
+          {
+            role: "assistant",
+
+            content:
+              "Here is a JavaScript revision guide covering closures, prototypes, and async/await.",
+          },
+        ],
+
+        previousRoute: "revision",
+
+        chatId:
+          "cmnosuchchat00000000000000",
+
+        documentNames: [],
+
+        revisionTopic: "JavaScript",
+
+        revisionContext:
+          "JavaScript covers closures, prototypes, and async/await.",
+
+        expectDocumentContext: false,
+
+        expectResolvedTopic:
+          "JavaScript",
+      },
+      {
+        name: "7. Revision → Quiz: 'quiz me on this' with revision context",
+
+        message: "Quiz me on this.",
+
+        history: [
+          {
+            role: "user",
+
+            content:
+              "Explain React Hooks.",
+          },
+
+          {
+            role: "assistant",
+
+            content:
+              "React Hooks let you use state and lifecycle in function components.",
+          },
+        ],
+
+        previousRoute: "revision",
+
+        chatId:
+          "cmnosuchchat00000000000000",
+
+        documentNames: [],
+
+        revisionTopic: "React Hooks",
+
+        revisionContext:
+          "React Hooks allow function components to use state and lifecycle methods.",
+
+        expectDocumentContext: false,
+
+        expectResolvedTopic:
+          "React Hooks",
+      },
+      {
+        name: "8. Planner → Quiz: 'give me 5 questions about that' resolves to planner topic",
+
+        message:
+          "Give me 5 questions about that",
+
+        history: [
+          {
+            role: "user",
+
+            content:
+              "Create a study plan for Data Structures.",
+          },
+
+          {
+            role: "assistant",
+
+            content:
+              "Here is a 7-day plan covering arrays, trees, and graphs.",
+          },
+        ],
+
+        previousRoute: "planner",
+
+        chatId:
+          "cmnosuchchat00000000000000",
+
+        documentNames: [],
+
+        plannerTopic: "Data Structures",
+
+        expectDocumentContext: false,
+
+        expectResolvedTopic:
+          "Data Structures",
+      },
     ];
 
     console.log(
@@ -461,6 +607,18 @@ Inventory management in TechPoint POS tracks stock levels automatically and rais
 
             documentNames:
               testCase.documentNames,
+
+            revisionTopic:
+              testCase.revisionTopic,
+
+            revisionContext:
+              testCase.revisionContext,
+
+            plannerTopic:
+              testCase.plannerTopic,
+
+            assignmentTopic:
+              testCase.assignmentTopic,
           }) as StudyMateGraphState
         );
 
@@ -478,11 +636,22 @@ Inventory management in TechPoint POS tracks stock levels automatically and rais
         (result.quizContext ??
           "").includes("TechPoint");
 
+      let topicResolved = true;
+
+      if (
+        testCase.expectResolvedTopic
+      ) {
+        topicResolved =
+          result.quizTopic ===
+          testCase.expectResolvedTopic;
+      }
+
       const finalPassed =
         passed &&
         (hasContext
           ? contextMatchesFixture
-          : true);
+          : true) &&
+        topicResolved;
 
       if (!finalPassed) {
         failures += 1;
@@ -501,6 +670,14 @@ Inventory management in TechPoint POS tracks stock levels automatically and rais
           result.quizContext?.length ?? 0
         }`
       );
+
+      if (
+        testCase.expectResolvedTopic
+      ) {
+        console.log(
+          `  Expected topic: ${testCase.expectResolvedTopic} | Actual topic: ${result.quizTopic}`
+        );
+      }
 
       if (
         result.quizData

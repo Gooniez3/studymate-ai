@@ -89,6 +89,8 @@ async function main() {
     classifyProviderError,
 
     _providerTestHooks,
+
+    _testResetProviderCooldowns,
   } = await import("../lib/ai/provider");
 
   let failures = 0;
@@ -128,6 +130,13 @@ async function main() {
 
     _providerTestHooks.openRouterFetch =
       null;
+
+    _providerTestHooks.cooldownMs = null;
+
+    _providerTestHooks.roleTimeoutMs =
+      null;
+
+    _testResetProviderCooldowns();
   }
 
   console.log(
@@ -572,7 +581,7 @@ async function main() {
     report(
       threw &&
         attemptedProviders.length ===
-          4 &&
+          5 &&
         (errorName === "ZodError" ||
           errorName === "Error"),
       "G. Zod validation still rejects malformed output (never accepted)",
@@ -760,7 +769,7 @@ async function main() {
       );
 
     const expectedChain =
-      "groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash-lite";
+      "groq:openai/gpt-oss-20b,gemini:gemini-3.1-flash-lite";
 
     report(
       attempted.join(",") ===
@@ -839,7 +848,7 @@ async function main() {
     }
 
     const expectedChain =
-      "groq:openai/gpt-oss-120b,groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash,openrouter:nvidia/nemotron-3-super-120b-a12b:free";
+      "groq:openai/gpt-oss-120b,groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash,gemini:gemini-3.1-flash-lite,openrouter:nvidia/nemotron-3-super-120b-a12b:free";
 
     report(
       threw &&
@@ -1053,6 +1062,749 @@ async function main() {
             `${c.name.split(" ->")[0]}=>${c.reason}`
         )
         .join(", ")}`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * N. Rate-limited models enter cooldown and are skipped next request
+   * ------------------------------------------------------------
+   */
+  {
+    let groqCalls = 0;
+
+    let geminiCalls = 0;
+
+    resetHooks();
+
+    _providerTestHooks.groqCreate =
+      async () => {
+        groqCalls += 1;
+
+        throw httpError(
+          429,
+          "rate limit",
+          "rate_limit_exceeded"
+        );
+      };
+
+    _providerTestHooks.geminiGenerate =
+      async () => {
+        geminiCalls += 1;
+
+        return { text: "ok" };
+      };
+
+    await createAICompletion(
+      BASE_MESSAGES,
+
+      { maxTokens: 10 }
+    );
+
+    const groqCallsAfterRequest1 =
+      groqCalls;
+
+    const result =
+      await createAICompletion(
+        BASE_MESSAGES,
+
+        { maxTokens: 10 }
+      );
+
+    report(
+      result.provider === "gemini" &&
+        geminiCalls === 2 &&
+        groqCalls ===
+          groqCallsAfterRequest1,
+      "N. Cooled-down models are skipped on the next request",
+
+      `groqCalls req1=${groqCallsAfterRequest1} total=${groqCalls} (unchanged) | geminiCalls=${geminiCalls}`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * O. Cooldown expires automatically
+   * ------------------------------------------------------------
+   */
+  {
+    let groqCalls = 0;
+
+    resetHooks();
+
+    _providerTestHooks.cooldownMs = 40;
+
+    _providerTestHooks.groqCreate =
+      async () => {
+        groqCalls += 1;
+
+        throw httpError(
+          429,
+          "rate limit",
+          "rate_limit_exceeded"
+        );
+      };
+
+    _providerTestHooks.geminiGenerate =
+      async () => ({ text: "ok" });
+
+    try {
+      await createAICompletion(
+        BASE_MESSAGES,
+
+        { maxTokens: 10 }
+      );
+    } catch {
+      // Strong chain ends on OpenRouter which is unhooked; ignore.
+    }
+
+    const before =
+      groqCalls;
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 80)
+    );
+
+    let retriedGroq = false;
+
+    try {
+      await createAIStructuredCompletion(
+        BASE_MESSAGES,
+
+        z.object({
+          ok: z.boolean(),
+        }),
+
+        "cooldown_expiry_probe"
+      );
+    } catch {
+      // OpenRouter unhooked -> may throw; only call-count matters.
+    }
+
+    retriedGroq = groqCalls > before;
+
+    report(
+      retriedGroq,
+      "O. Cooldown expires and cooled models are retried again",
+
+      `groqCalls before=${before} after=${groqCalls}`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * P. Attempt timeout falls through to the next provider
+   * ------------------------------------------------------------
+   */
+  {
+    resetHooks();
+
+    _providerTestHooks.roleTimeoutMs =
+      200;
+
+    _providerTestHooks.groqCreate =
+      async () =>
+        new Promise(() => {
+          // Never resolves - simulates a hung provider.
+        });
+
+    _providerTestHooks.geminiGenerate =
+      async () => ({ text: "fast enough" });
+
+    const startedAt = Date.now();
+
+    const result =
+      await createAICompletion(
+        BASE_MESSAGES,
+
+        { maxTokens: 10 }
+      );
+
+    const elapsed = Date.now() - startedAt;
+
+    report(
+      result.provider === "gemini" &&
+        elapsed < 5000,
+      "P. Hung provider times out and falls through",
+
+      `provider=${result.provider} elapsed=${elapsed}ms`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * Q. Balanced structured failure escalates to the strong chain
+   * ------------------------------------------------------------
+   */
+  {
+    const strictSchema = z.object({
+      title: z.string().min(1),
+
+      requiredField: z.string().min(1),
+    });
+
+    let groq120bCalls = 0;
+
+    resetHooks();
+
+    _providerTestHooks.groqCreate =
+      async (args) => {
+        if (
+          args.model ===
+          "openai/gpt-oss-120b"
+        ) {
+          groq120bCalls += 1;
+        }
+
+        return makeGroqCompletion(
+          '{"title":"missing required field"}'
+        );
+      };
+
+    _providerTestHooks.geminiGenerate =
+      async () => ({
+        text:
+          '{"title":"still malformed"}',
+      });
+
+    _providerTestHooks.openRouterFetch =
+      async () =>
+        fakeFetchResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  title: "Escalated",
+
+                  requiredField:
+                    "present",
+                }),
+              },
+            },
+          ],
+        });
+
+    const result =
+      await createAIStructuredCompletion(
+        BASE_MESSAGES,
+
+        strictSchema,
+
+        "escalation_probe",
+
+        /*
+         * Balanced role: malformed output must
+         * escalate into the appended strong
+         * chain - groq-120b is retried once at
+         * full effort (no cooldown on
+         * validation failures) before OpenRouter.
+         */
+        { modelRole: "balanced" }
+      );
+
+    const escalatedToStrong =
+      groq120bCalls === 2;
+
+    const valid =
+      strictSchema.safeParse(result.data)
+        .success;
+
+    report(
+      escalatedToStrong &&
+        valid &&
+        result.provider ===
+          "openrouter",
+      "Q. Malformed balanced output escalates through strong chain (Zod still guards)",
+
+      `groq120bCalls=${groq120bCalls} (balanced + escalation) | final=${result.provider}/${result.model}`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * R. OpenRouterRateLimitError(statusCode=429, code=429) classifies
+   *    as rate_limit - provider-specific error subclasses must not
+   *    bypass the HTTP status classifier.
+   * ------------------------------------------------------------
+   */
+  {
+    class OpenRouterRateLimitError extends Error {
+      statusCode = 429;
+
+      code = 429;
+
+      constructor() {
+        super(
+          "Rate limit exceeded: openrouter_free_tier_daily (50/day)"
+        );
+
+        this.name =
+          "OpenRouterRateLimitError";
+      }
+    }
+
+    const classification =
+      classifyProviderError(
+        new OpenRouterRateLimitError()
+      );
+
+    const plainStatusShape =
+      classifyProviderError({
+        statusCode: 429,
+      } as unknown);
+
+    const numericCodeOnly =
+      classifyProviderError({
+        code: 429,
+        message:
+          "free tier daily limit",
+      } as unknown);
+
+    report(
+      classification.retryable &&
+        classification.reason ===
+          "rate_limit" &&
+        plainStatusShape.reason ===
+          "rate_limit" &&
+        numericCodeOnly.reason ===
+          "rate_limit",
+      "R. OpenRouter 429 shapes classify as rate_limit",
+
+      `subclass=>${classification.reason} | statusCodeShape=>${plainStatusShape.reason} | numericCodeShape=>${numericCodeOnly.reason}`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * S/T. Pre-first-token hang falls through within the interactive
+   * window and Gemini Flash-Lite is reached BEFORE OpenRouter.
+   * Mirrors the observed production failure sequence.
+   * ------------------------------------------------------------
+   */
+  {
+    const attemptedOrder: string[] = [];
+
+    let fetchCalls = 0;
+
+    const tokens: string[] = [];
+
+    resetHooks();
+
+    _providerTestHooks.firstTokenTimeoutMs =
+      300;
+
+    _providerTestHooks.groqCreate =
+      async (args) => {
+        attemptedOrder.push(
+          `groq:${args.model}`
+        );
+
+        if (
+          args.model ===
+          "openai/gpt-oss-120b"
+        ) {
+          throw httpError(
+            429,
+            "rate limit",
+            "rate_limit_exceeded"
+          );
+        }
+
+        // gpt-oss-20b: hangs with no first token.
+        return new Promise(() => {});
+      };
+
+    _providerTestHooks.geminiGenerateStream =
+      async function* (model) {
+        attemptedOrder.push(
+          `gemini:${model}`
+        );
+
+        if (
+          model === "gemini-2.5-flash"
+        ) {
+          // Mirrors the observed production rate limit.
+          throw httpError(
+            429,
+            "rate limit",
+            "rate_limit_exceeded"
+          );
+        }
+
+        yield { text: "Quick answer." };
+      };
+
+    _providerTestHooks.openRouterFetch =
+      async () => {
+        fetchCalls += 1;
+
+        attemptedOrder.push("openrouter");
+
+        throw httpError(
+          429,
+          "daily free tier exhausted"
+        );
+      };
+
+    const startedAt = Date.now();
+
+    const result =
+      await createAICompletion(
+        BASE_MESSAGES,
+
+        {
+          maxTokens: 40,
+
+          onToken: (delta) =>
+            tokens.push(delta),
+        }
+      );
+
+    const elapsed = Date.now() - startedAt;
+
+    const liteIndex =
+      attemptedOrder.indexOf(
+        "gemini:gemini-3.1-flash-lite"
+      );
+
+    const openRouterIndex =
+      attemptedOrder.indexOf(
+        "openrouter"
+      );
+
+    const liteBeforeOpenRouter =
+      liteIndex !== -1 &&
+      (openRouterIndex === -1 ||
+        liteIndex < openRouterIndex);
+
+    report(
+      result.provider === "gemini" &&
+        result.model ===
+          "gemini-3.1-flash-lite" &&
+        result.content ===
+          "Quick answer." &&
+        elapsed < 5000 &&
+        liteBeforeOpenRouter,
+      "S/T. Pre-token timeout falls through; Flash-Lite serves before OpenRouter",
+
+      `chain=${attemptedOrder.join(" -> ")} | elapsed=${elapsed}ms | fetchCalls=${fetchCalls} | content="${result.content}"`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * V. Every provider unavailable -> bounded, predictable failure
+   * ------------------------------------------------------------
+   */
+  {
+    resetHooks();
+
+    _providerTestHooks.firstTokenTimeoutMs =
+      300;
+
+    _providerTestHooks.groqCreate =
+      async () => {
+        throw httpError(
+          429,
+          "rate limit",
+          "rate_limit_exceeded"
+        );
+      };
+
+    _providerTestHooks.geminiGenerateStream =
+      async () => {
+        throw httpError(
+          429,
+          "RESOURCE_EXHAUSTED quota"
+        );
+      };
+
+    _providerTestHooks.openRouterFetch =
+      async () =>
+        fakeFetchResponse(
+          {
+            error: {
+              message:
+                "free tier daily limit reached",
+            },
+          },
+
+          false,
+
+          429
+        );
+
+    const startedAt = Date.now();
+
+    let threw = false;
+
+    try {
+      await createAICompletion(
+        BASE_MESSAGES,
+
+        {
+          maxTokens: 20,
+
+          onToken: () => undefined,
+        }
+      );
+    } catch {
+      threw = true;
+    }
+
+    const elapsed = Date.now() - startedAt;
+
+    report(
+      threw && elapsed < 15000,
+      "V. All providers unavailable fails bounded and predictably",
+
+      `threw=${threw} elapsed=${elapsed}ms`
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * W. OpenRouter daily 429 enters cooldown and the next request
+   *    skips it entirely.
+   * ------------------------------------------------------------
+   */
+  {
+    let fetchCalls = 0;
+
+    resetHooks();
+
+    _providerTestHooks.firstTokenTimeoutMs =
+      200;
+
+    _providerTestHooks.groqCreate =
+      async () => {
+        throw httpError(
+          429,
+          "rate limit",
+          "rate_limit_exceeded"
+        );
+      };
+
+    _providerTestHooks.geminiGenerate =
+      async () => {
+        throw httpError(
+          429,
+          "RESOURCE_EXHAUSTED"
+        );
+      };
+
+    _providerTestHooks.openRouterFetch =
+      async () => {
+        fetchCalls += 1;
+
+        return fakeFetchResponse(
+          {
+            error: {
+              message:
+                "Rate limit exceeded: openrouter_free_tier_daily",
+            },
+          },
+
+          false,
+
+          429
+        );
+      };
+
+    const cooldownSchema = z.object({
+      value: z.string().min(1),
+    });
+
+    try {
+      await createAIStructuredCompletion(
+        BASE_MESSAGES,
+
+        cooldownSchema,
+
+        "cooldown_skip_probe"
+      );
+    } catch {
+      // Expected exhaustion.
+    }
+
+    const fetchCallsAfterRequest1 =
+      fetchCalls;
+
+    try {
+      await createAIStructuredCompletion(
+        BASE_MESSAGES,
+
+        cooldownSchema,
+
+        "cooldown_skip_probe"
+      );
+    } catch {
+      /*
+       * Expected exhaustion again - but reached
+       * via instant cooldown skips, not another
+       * OpenRouter round trip.
+       */
+    }
+
+    report(
+      fetchCallsAfterRequest1 === 1 &&
+        fetchCalls === 1,
+      "W. OpenRouter 429 enters cooldown; next request skips it",
+
+      `fetchCalls req1=${fetchCallsAfterRequest1} total=${fetchCalls} (unchanged)`
+    );
+  }
+
+
+  function normalizedPropertiesFor(
+    sanitized: Record<string, unknown>
+  ): Record<string, unknown> {
+    return ((sanitized.properties ?? {}) as Record<string, unknown>);
+  }
+  /*
+   * ------------------------------------------------------------
+   * H. Gemini schema normalization: planner/revision/assignment
+   *    nullable fields produce NO null-type / type-arrays, and
+   *    hydration restores missing nullable keys as null.
+   *    Zero-quota deterministic test for Bug 4.
+   * ------------------------------------------------------------
+   */
+  {
+    const {
+      _testNormalizeGeminiSchema,
+
+      _testSanitizeGeminiSchema,
+
+      setNullAlongPath,
+    } = await import("../lib/ai/provider");
+
+    const schemas = [
+      [
+        "studymate_study_plan",
+
+        await import(
+          "../lib/ai/agents/study-planner-agent"
+        ).then((m) => m.studyPlanSchema),
+      ],
+
+      [
+        "studymate_exam_revision",
+
+        await import(
+          "../lib/ai/agents/exam-revision-agent"
+        ).then((m) => m.examRevisionSchema),
+      ],
+
+      [
+        "studymate_assignment_guidance",
+
+        await import(
+          "../lib/ai/agents/assignment-assistant-agent"
+        ).then((m) => m.assignmentGuidanceSchema),
+      ],
+
+      [
+        "studymate_quiz",
+
+        await import("../lib/ai/agents/quiz-agent").then(
+          (m) => m.quizSchema
+        ),
+      ],
+    ] as const;
+
+    let allClean = true;
+
+    let plannerPromoted = false;
+
+    let hydrationWorks = false;
+
+    for (const [name, schema] of schemas) {
+      const raw = JSON.parse(
+        JSON.stringify(z.toJSONSchema(schema))
+      );
+
+      /*
+       * Production path: strip null branches,
+       * then apply the Gemini keyword sanitizer
+       * (which drops minItems/maxItems).
+       */
+      const sanitized = JSON.parse(
+        JSON.stringify(
+          _testSanitizeGeminiSchema(
+            _testNormalizeGeminiSchema(raw)
+          )
+        )
+      );
+
+      const text = JSON.stringify(sanitized);
+
+      if (text.includes('"null"')) {
+        allClean = false;
+      }
+
+      if (
+        /"type":\s*\[/.test(text) ||
+        text.includes("minItems") ||
+        text.includes("maxItems")
+      ) {
+        allClean = false;
+      }
+
+      if (
+        name === "studymate_study_plan"
+      ) {
+        plannerPromoted =
+          JSON.stringify(
+            normalizedPropertiesFor(
+              sanitized
+            ).durationDays ??
+              {}
+          ).includes('"integer"') &&
+          !JSON.stringify(
+            normalizedPropertiesFor(
+              sanitized
+            ).durationDays ?? {}
+          ).includes("anyOf");
+      }
+    }
+
+    /*
+     * Hydration unit check: nested wildcard path
+     * plus root-level field.
+     */
+    const sample: Record<string, unknown> = {
+      durationDays: undefined,
+
+      days: [{ tasks: [{}] }],
+    };
+
+    delete sample.durationDays;
+
+    setNullAlongPath(sample, ["durationDays"]);
+
+    setNullAlongPath(sample, [
+      "days",
+
+      "*",
+
+      "tasks",
+
+      "*",
+
+      "minutes",
+    ]);
+
+    const afterDays = (sample.days as unknown as Array<Record<string, unknown>>)[0];
+    const afterTasks = (afterDays.tasks as unknown as Array<Record<string, unknown>>)[0];
+    hydrationWorks =
+      sample.durationDays === null &&
+      afterTasks.minutes === null;
+
+    report(
+      allClean && plannerPromoted && hydrationWorks,
+      "H. Gemini schema normalization + nullable hydration",
+
+      `allSchemasClean=${allClean} plannerDurationPromoted=${plannerPromoted} hydrationWorks=${hydrationWorks}`
     );
   }
 

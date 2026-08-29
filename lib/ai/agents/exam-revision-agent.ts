@@ -513,6 +513,8 @@ The JSON output MUST contain all eleven top-level keys: title, topic, objective,
         "studymate_exam_revision",
 
         {
+          modelRole: "balanced",
+
           maxTokens:
             resolveRevisionMaxTokens(
               messages

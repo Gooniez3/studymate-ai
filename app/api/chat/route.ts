@@ -908,20 +908,6 @@ void (async () => {
 
           documentCitations: [],
 
-          quizTopic: "",
-
-          quizContext: "",
-
-          quizData: null,
-
-          plannerTopic: "",
-
-          plannerContext: "",
-
-          revisionTopic: "",
-
-          revisionContext: "",
-
           error: null,
         },
         {

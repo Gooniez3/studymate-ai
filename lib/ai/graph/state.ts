@@ -11,13 +11,18 @@ import type {
   ExamRevisionResult,
 } from "@/lib/ai/agents/exam-revision-agent";
 
+import type {
+  AssignmentGuidanceResult,
+} from "@/lib/ai/agents/assignment-assistant-agent";
+
 export type StudyMateRoute =
   | "direct"
   | "document"
   | "web"
   | "quiz"
   | "planner"
-  | "revision";
+  | "revision"
+  | "assignment";
 
 export type StudyMateMode =
   | "default"
@@ -202,6 +207,32 @@ revisionContext: Annotation<string>({
  */
 revisionData: Annotation<
   ExamRevisionResult | null
+>({
+  reducer: (_, next) => next,
+  default: () => null,
+}),
+
+assignmentTopic: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+assignmentContext: Annotation<string>({
+  reducer: (_, next) => next,
+  default: () => "",
+}),
+
+/*
+ * Latest generated assignment guidance.
+ * Like plannerData and revisionData this
+ * is NOT reset per request, so checkpoint
+ * history keeps the previous guidance
+ * available for follow-up modifications
+ * such as "make it shorter" or "focus
+ * more on methodology".
+ */
+assignmentData: Annotation<
+  AssignmentGuidanceResult | null
 >({
   reducer: (_, next) => next,
   default: () => null,

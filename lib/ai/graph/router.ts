@@ -18,6 +18,7 @@ const routerSchema = z.object({
     "quiz",
     "planner",
     "revision",
+    "assignment",
   ]),
 
   reason: z
@@ -231,6 +232,73 @@ const REVISION_FOLLOWUP_PATTERNS = [
   /\b(low|high)[-\s]priority\b/i,
 
   /\bmore\s+(likely\s+)?(exam\s+)?questions\b/i,
+];
+
+/*
+ * High-precision explicit assignment-help
+ * triggers. Checked AFTER quiz/planner/revision
+ * so scheduled plans, quizzes, and revision
+ * notes keep priority. Ambiguous study help
+ * ("explain normalization") still falls through
+ * to the routing LLM.
+ */
+const EXPLICIT_ASSIGNMENT_PATTERNS = [
+  /\bhelp\s+(me\s+)?(with|understand(ing)?|breaking\s+down)\b[^.!?\n]{0,30}\b(this|my|the|us)\b[^.!?\n]{0,40}\b(assignments?|tasks?|rubrics?|briefs?|essays?|reports?)\b/i,
+
+  /\b(this|the|my)\s+assignment\s+(question|requirements?|brief|tasks?)\b/i,
+
+  /\bassignments?\s+(outline|breakdown|structure|help|guidance)\b/i,
+
+  /\b(report|essay|paper)s?\s+outline\b/i,
+
+  /\b(outline|structure|organize|organise)\b[^.!?\n]{0,40}\b(my|this|the)\b[^.!?\n]{0,60}\b(reports?|essays?|assignments?|papers?)\b/i,
+
+  /\bunderstand\s+(this|the)\s+rubric\b/i,
+
+  /\bwhat\s+does\s+(this|the|my)\s+rubric\b/i,
+
+  /\brubric\s+(require|criteria|says?|ask)/i,
+
+  /\breview\s+(my|this|the)\s+(assignment|report|draft|introduction|conclusion|essay|paragraph|work)\b/i,
+
+  /\bcompare\b[^.!?\n]{0,30}\b(this|my|the)\b[^.!?\n]{0,40}\b(draft|introduction|report|essay|paragraph|work)\b/i,
+
+  /\b(improve|strengthen)\s+(my|this|the)\s+(introduction|conclusion|paragraph|draft|report|essay|writing)\b/i,
+
+  /\bcheck\s+my\s+(draft|work|report|essay)\b/i,
+
+  /\bbreak\s+down\s+(this|the|my)\s+(task|assignment|question|brief)\b/i,
+
+  /\bstructure\s+(it|this)\s+(for|to)\s+\d+\s*words?\b/i,
+];
+
+/*
+ * Short modification requests that continue an
+ * existing assignment-guidance conversation,
+ * e.g. "make it shorter", "focus more on
+ * methodology", "what should I write first",
+ * "what am I missing?", "2000 words".
+ */
+const ASSIGNMENT_FOLLOWUP_PATTERNS = [
+  /^(please\s+)?(make|shorten|trim|shrink|compress|expand|lengthen|reduce|adjust|change|keep|drop|remove|delete)\b/i,
+
+  /^focus\s+more(\s+on)?\b/i,
+
+  /^(also\s+)?add\b/i,
+
+  /^what\s+(should\s+i|am\s+i|do\s+i)\b/i,
+
+  /^how\s+should\s+i\b/i,
+
+  /\b(against|per|in)\s+the\s+rubric\b/i,
+
+  /\bwhat\s+am\s+i\s+missing\b/i,
+
+  /\bwrite\s+first\b/i,
+
+  /\bword\s+(count|limit)\b/i,
+
+  /\b\d+\s*words?\b/i,
 ];
 
 /*
@@ -532,7 +600,31 @@ export async function routerNode(
     };
   }
 
-  // 4. Explicit uploaded-document reference -> document
+  // 4. Explicit assignment-help request -> assignment
+  if (
+    EXPLICIT_ASSIGNMENT_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "assignment",
+        userMessage:
+          userMessage.slice(0, 80),
+      }
+    );
+
+    return {
+      route: "assignment",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 5. Explicit uploaded-document reference -> document
   const strongUploadReference =
     STRONG_UPLOAD_PATTERNS.some(
       (pattern) =>
@@ -577,7 +669,7 @@ export async function routerNode(
     };
   }
 
-  // 5. Referential message right after attaching a PDF -> document
+  // 6. Referential message right after attaching a PDF -> document
   const shortDocumentImperative =
     /^(please\s+)?(explain|summarize|summarise|review|analyze|analyse|read)\b/i.test(
       userMessage.trim()
@@ -610,7 +702,7 @@ export async function routerNode(
     };
   }
 
-  // 6. Clear time-sensitive request -> web (skips the routing LLM)
+  // 7. Clear time-sensitive request -> web (skips the routing LLM)
   const isDocumentFollowUpShape =
     incomingPreviousRoute ===
       "document" &&
@@ -642,7 +734,7 @@ export async function routerNode(
     };
   }
 
-  // 7. Strong follow-up to the previous document-grounded answer -> document
+  // 8. Strong follow-up to the previous document-grounded answer -> document
   if (
     incomingPreviousRoute ===
       "document" &&
@@ -673,7 +765,7 @@ export async function routerNode(
     };
   }
 
-  // 8. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
+  // 9. Trivial greetings/acknowledgements -> direct (skips the routing LLM)
   if (
     TRIVIAL_DIRECT_PATTERN.test(
       userMessage.trim()
@@ -696,7 +788,7 @@ export async function routerNode(
     };
   }
 
-  // 9. Modification follow-up to a previous revision -> revision (skips the routing LLM)
+  // 10. Modification follow-up to a previous revision -> revision (skips the routing LLM)
   if (
     incomingPreviousRoute ===
       "revision" &&
@@ -727,7 +819,38 @@ export async function routerNode(
     };
   }
 
-  // 10. Modification follow-up to a previous plan -> planner (skips the routing LLM)
+  // 11. Modification follow-up to previous assignment guidance -> assignment (skips the routing LLM)
+  if (
+    incomingPreviousRoute ===
+      "assignment" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    userMessage.trim().length <=
+      120 &&
+    ASSIGNMENT_FOLLOWUP_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "assignment",
+        matched:
+          "assignment modification follow-up",
+      }
+    );
+
+    return {
+      route: "assignment",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 12. Modification follow-up to a previous plan -> planner (skips the routing LLM)
   if (
     incomingPreviousRoute ===
       "planner" &&
@@ -758,7 +881,7 @@ export async function routerNode(
     };
   }
 
-  // 11. Context-enriched routing LLM for everything else
+  // 13. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);
 
@@ -830,6 +953,21 @@ revision
   - "Make it shorter" (after revision material was produced)
 - Do NOT choose revision for plain explanations ("explain recursion") without revision/exam intent
 
+assignment
+- The user asks for help understanding, breaking down, structuring, planning the writing of, or reviewing an ASSIGNMENT, report, essay, task sheet, or rubric
+- The user asks about assignment requirements, deliverables, outlines, rubric criteria, or what they are missing
+- The user pastes draft text (introduction, paragraph, section) and asks for review or improvement
+- The user modifies assignment guidance created earlier in this conversation ("make it shorter", "focus more on methodology", "what should I write first?")
+- Examples:
+  - "Help me understand this assignment"
+  - "Break down this assignment question for me"
+  - "Create an outline for my cloud computing report"
+  - "What does this rubric require?"
+  - "Review my introduction and tell me how to improve it"
+  - "How should I structure my database assignment?"
+  - "Focus more on methodology" (after assignment guidance was produced)
+- Do NOT choose assignment for pure subject explanations ("explain normalization") with no task/rubric/draft intent
+
 IMPORTANT ROUTING RULES:
 - Route based on the user's INTENT.
 
@@ -861,6 +999,16 @@ IMPORTANT ROUTING RULES:
   "Quiz me on this"
   -> quiz
 
+- Explicit assignment-help requests (understanding/breaking down an assignment, outlines, structuring reports/essays, rubric interpretation, reviewing drafts) take priority over document and direct.
+  Example:
+  "What does this rubric require?"
+  -> assignment (with document grounding handled downstream)
+
+- Scheduled plans stay planner even for assignments; quizzes stay quiz; exam revision stays revision.
+  Example:
+  "Make me a 7-day plan for this assignment"
+  -> planner
+
 - Quiz intent also takes priority over document when the user asks to create a quiz FROM an uploaded document.
   Example:
   "Create 5 quiz questions from my PDF"
@@ -891,7 +1039,7 @@ CONVERSATION FOLLOW-UP RULES:
 
 - Do not choose web just because Web Search is enabled.
 
-- If neither planner, revision, quiz, document, nor web retrieval is necessary, choose direct.
+- If neither planner, revision, assignment, quiz, document, nor web retrieval is necessary, choose direct.
 
 - Keep the reason concise, ideally under 120 characters.
       `.trim(),

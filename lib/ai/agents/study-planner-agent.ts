@@ -359,6 +359,8 @@ The JSON output MUST contain all eight top-level keys: title, goal, durationDays
         "studymate_study_plan",
 
         {
+          modelRole: "balanced",
+
           maxTokens:
             resolvePlannerMaxTokens(
               messages

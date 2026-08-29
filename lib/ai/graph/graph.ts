@@ -54,6 +54,58 @@ import {
   renderExamRevisionMarkdown,
 } from "@/lib/ai/agents/exam-revision-agent";
 
+import {
+  generateAssignmentGuidance,
+  renderAssignmentMarkdown,
+} from "@/lib/ai/agents/assignment-assistant-agent";
+
+/*
+ * Detects whether the message contains a
+ * substantial pasted draft that is itself the
+ * review target.
+ *
+ * Shape-based rather than length-only: a draft
+ * label ("introduction:", "paragraph:",
+ * "draft:", ...) followed by actual inline
+ * content counts even when the paste is
+ * short. Ordinary conversational "this" does
+ * NOT trigger detection - explicit document
+ * references are evaluated independently by
+ * the caller.
+ */
+const DRAFT_LABEL_INLINE_PATTERN =
+  /\b(introduction|paragraph|draft|essay|report|section|answer|response)\b[^:]*:\s*(?=\S)/i;
+
+const REVIEW_REQUEST_VERB_PATTERN =
+  /\b(review|feedback\s+on|give\s+feedback|improve|check|assess|critique|is\s+this)\b/i;
+
+export function detectPastedReviewTarget(
+  message: string
+): boolean {
+  const reviewRequestShape =
+    REVIEW_REQUEST_VERB_PATTERN.test(
+      message
+    );
+
+  if (!reviewRequestShape) {
+    return false;
+  }
+
+  const hasInlineDraftContent =
+    DRAFT_LABEL_INLINE_PATTERN.test(
+      message
+    );
+
+  const hasLongPastedContent =
+    message.trim().length >= 320 ||
+    /:\s*\n/.test(message);
+
+  return (
+    hasInlineDraftContent ||
+    hasLongPastedContent
+  );
+}
+
 function getLastUserText(
   state: StudyMateGraphState
 ): string {
@@ -191,6 +243,127 @@ function getTopicalUserText(
 }
 
 /*
+ * Exported for testing: resolves the quiz topic
+ * when the user makes a conversational reference
+ * ("it", "this") to a previous agent's output.
+ */
+export function resolveQuizTopic(
+  userMessage: string,
+  previousRoute:
+    | "direct"
+    | "document"
+    | "web"
+    | "quiz"
+    | "revision"
+    | "planner"
+    | "assignment"
+    | null,
+  stateTopics: {
+    revisionTopic?: string;
+    plannerTopic?: string;
+    assignmentTopic?: string;
+  }
+): string {
+  const lower =
+    userMessage.toLowerCase();
+
+  const unquoted = lower.replace(
+    /["'`][^"'`]*["'`]/g,
+    " "
+  );
+
+  const hasRef =
+    /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+      unquoted
+    ) ||
+    /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+      lower
+    ) ||
+    /\bjust\s+discussed\b/.test(
+      lower
+    );
+
+  if (!hasRef) {
+    return userMessage;
+  }
+
+  /*
+   * If the message also contains an explicit
+   * topic (e.g. "Quiz me on JavaScript, it is
+   * hard"), do not resolve — the user already
+   * named the topic.
+   */
+  const explicitTopicAfterPrep =
+    /\b(?:on|about|over|regarding)\s+([a-z][a-z\s]{1,40})\b/.exec(
+      unquoted
+    );
+
+  if (explicitTopicAfterPrep) {
+    const after =
+      explicitTopicAfterPrep[1].trim();
+
+    const isOnlyRef =
+      /^(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above|the same topic|what\s+we|just\s+discussed|what\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read))$/.test(
+        after
+      );
+
+    if (!isOnlyRef) {
+      return userMessage;
+    }
+  }
+
+  if (
+    previousRoute === "revision" &&
+    stateTopics.revisionTopic
+  ) {
+    return stateTopics.revisionTopic;
+  }
+
+  if (
+    previousRoute === "planner" &&
+    stateTopics.plannerTopic
+  ) {
+    return stateTopics.plannerTopic;
+  }
+
+  if (
+    previousRoute === "assignment" &&
+    stateTopics.assignmentTopic
+  ) {
+    return stateTopics.assignmentTopic;
+  }
+
+  return userMessage;
+}
+
+/*
+ * Exported for testing: extracts the explicit
+ * question count the user requested, returning
+ * undefined when no number is present.
+ */
+export function extractRequestedQuestionCount(
+  message: string
+): number | undefined {
+  const lower =
+    message.toLowerCase();
+
+  const match =
+    lower.match(
+      /\b(?:give|make|create|generate|write|do)\s+(?:me\s+|us\s+)?(\d+)\b/
+    ) ||
+    lower.match(
+      /\b(\d+)\s+(?:questions?|quiz|quizzes|mcqs?)\b/
+    ) ||
+    lower.match(
+      /\bquiz\s+(?:me\s+)?(?:with\s+)?(\d+)\b/
+    );
+
+  return match
+    ? parseInt(match[1], 10)
+    : undefined;
+}
+
+/*
  * Exported for testing: scripts exercise
  * document-grounded quiz detection directly
  * against crafted states.
@@ -275,6 +448,71 @@ export async function quizNode(
       mentionsUploadedMaterial ||
       (mentionsConversationReference &&
         hasDocumentMaterial);
+
+    /*
+     * FIX: When the user makes a conversational
+     * reference ("it", "this") and the previous
+     * route was revision/planner/assignment,
+     * resolve the reference to the actual topic
+     * from the previous agent's state instead of
+     * passing the raw message (e.g. "quiz me on
+     * it") as the topic.
+     */
+    const resolvedTopic =
+      resolveQuizTopic(
+        userMessage,
+        state.previousRoute,
+        {
+          revisionTopic:
+            state.revisionTopic,
+          plannerTopic:
+            state.plannerTopic,
+          assignmentTopic:
+            state.assignmentTopic,
+        }
+      );
+
+    const resolvedFromPrevious =
+      resolvedTopic !== userMessage;
+
+    if (
+      resolvedFromPrevious &&
+      !quizContext
+    ) {
+      if (
+        state.previousRoute ===
+          "revision" &&
+        state.revisionContext
+      ) {
+        quizContext =
+          state.revisionContext;
+      } else if (
+        state.previousRoute ===
+          "planner" &&
+        state.plannerContext
+      ) {
+        quizContext =
+          state.plannerContext;
+      } else if (
+        state.previousRoute ===
+          "assignment" &&
+        state.assignmentContext
+      ) {
+        quizContext =
+          state.assignmentContext;
+      }
+    }
+
+    /*
+     * FIX: Extract explicit question count from
+     * the user message so "give me 3 quiz
+     * questions" produces exactly 3, not the
+     * default 5.
+     */
+    const requestedCount =
+      extractRequestedQuestionCount(
+        userMessage
+      );
 
     const quizRetrievalStartedAt =
       performance.now();
@@ -377,10 +615,11 @@ export async function quizNode(
     const quiz =
       await generateQuiz({
         topic:
-          userMessage,
+          resolvedTopic,
         context:
           quizContext,
-        questionCount: 5,
+        questionCount:
+          requestedCount ?? 5,
       });
 
     const visibleResponse =
@@ -393,7 +632,7 @@ return {
     visibleResponse,
 
   quizTopic:
-    userMessage,
+    resolvedTopic,
 
   quizContext,
 
@@ -975,6 +1214,346 @@ export async function revisionNode(
         "I couldn't create the revision material right now. Please try again.",
       error:
         "Revision generation failed.",
+    };
+  }
+}
+
+/*
+ * Exported for testing: scripts exercise
+ * document-grounded assignment detection
+ * directly against crafted states.
+ */
+export async function assignmentNode(
+  state: StudyMateGraphState
+) {
+  console.log(
+    "LangGraph node: assignment"
+  );
+
+  const userMessage =
+    getLastUserText(state);
+
+  if (!userMessage.trim()) {
+    return {
+      response:
+        "Tell me which assignment you'd like help with.",
+      error:
+        "Assignment request is missing.",
+    };
+  }
+
+  try {
+    let assignmentContext = "";
+
+    let assignmentCitations: DocumentCitation[] =
+      [];
+
+    const lowerMessage =
+      userMessage.toLowerCase();
+
+    /*
+     * Output-noun compounds ("assignment
+     * outline", "report outline", "draft
+     * review") name the GUIDANCE, not an
+     * uploaded file, and are stripped before
+     * the material scan so a general request
+     * like "Help me structure a Python
+     * assignment" stays ungrounded even when
+     * unrelated PDFs exist in the chat.
+     */
+    const materialScanText =
+      lowerMessage.replace(
+        /\b(assignment|report|essay|task)\s+(outline|breakdown|structure|feedback|review|guidance|help|plan)\b/g,
+        " "
+      );
+
+    /*
+     * Document grounding mirrors the quiz,
+     * planner, and revision nodes:
+     * explicit uploaded-material words, page
+     * references, assignment-document nouns
+     * (brief/rubric/task sheet), or conversational
+     * references combined with real document
+     * presence trigger retrieval.
+     */
+    const hasDocumentMaterial =
+      state.documentNames.length > 0 ||
+      state.documentAttachedThisTurn ||
+      state.previousRoute ===
+        "document";
+
+    const mentionsUploadedMaterial =
+      /\b(pdf|documents?|docs?|files?|uploads?|uploaded|attachments?|notes?|slides?|lectures?|materials?|readings?|chapters?)\b/.test(
+        materialScanText
+      ) ||
+      /\bpages?\s*(?:numbers?\s*)?\d+\b/.test(
+        materialScanText
+      ) ||
+      /\b(rubrics?|marking\s+schemes?|assignment\s+briefs?|assignment\s+sheets?|task\s+sheets?)\b/.test(
+        materialScanText
+      );
+
+    const unquotedMessage = lowerMessage.replace(
+      /["'`][^"'`]*["'`]/g,
+      " "
+    );
+
+    const mentionsConversationReference =
+      /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+        unquotedMessage
+      ) ||
+      /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+        lowerMessage
+      ) ||
+      /\bjust\s+discussed\b/.test(
+        lowerMessage
+      );
+
+    /*
+     * Pasted-draft review detection.
+     *
+     * When the message itself contains a
+     * substantial draft (introduction,
+     * paragraph, section) as the review
+     * target, that pasted text is the primary
+     * source. A previously uploaded PDF must
+     * NOT be retrieved merely because the
+     * message says "this", documents exist in
+     * the chat, or an earlier turn was
+     * document-focused.
+     *
+     * Explicit document references ("using
+     * the uploaded rubric", "compare with the
+     * assignment brief", page references)
+     * independently override this suppression.
+     */
+    /*
+     * Shape + inline-content based detection
+     * (shared exported helper - unit tested).
+     * Catches short pastes like
+     * "Review this introduction: Cloud
+     * computing has changed..." via the draft
+     * label followed by real content, while
+     * ordinary conversational "this" never
+     * triggers it.
+     */
+    const hasPastedReviewTarget =
+      detectPastedReviewTarget(
+        userMessage
+      );
+
+    const wantsDocumentAssignment =
+      mentionsUploadedMaterial ||
+      (mentionsConversationReference &&
+        hasDocumentMaterial &&
+        !hasPastedReviewTarget);
+
+    const retrievalStartedAt =
+      performance.now();
+
+    if (
+      wantsDocumentAssignment &&
+      state.chatId
+    ) {
+      let documentResult =
+        await searchDocuments({
+          chatId:
+            state.chatId,
+          query:
+            userMessage,
+          limit: 6,
+        });
+
+      if (
+        !documentResult.success
+      ) {
+        /*
+         * Referential requests ("review what we
+         * just discussed against the rubric")
+         * embed poorly on their own, so retry
+         * against the most topical earlier user
+         * message.
+         */
+        const topicalUserMessage =
+          getTopicalUserText(state);
+
+        if (
+          topicalUserMessage.trim()
+        ) {
+          documentResult =
+            await searchDocuments({
+              chatId:
+                state.chatId,
+              query: `${topicalUserMessage}\n${userMessage}`,
+              limit: 6,
+            });
+        }
+      }
+
+      if (
+        !documentResult.success &&
+        state.documentNames.length > 0
+      ) {
+        documentResult =
+          await searchDocuments({
+            chatId:
+              state.chatId,
+
+            query: state.documentNames.join(
+              ", "
+            ),
+
+            limit: 6,
+          });
+      }
+
+      if (
+        documentResult.success
+      ) {
+        assignmentContext =
+          documentResult.context;
+
+        assignmentCitations =
+          documentResult.chunks.map(
+            (chunk) => ({
+              evidenceNumber:
+                chunk.evidenceNumber,
+
+              documentName:
+                chunk.documentName,
+
+              pageNumber:
+                chunk.pageNumber,
+            })
+          );
+      }
+
+      console.log(
+        `[perf] assignment document retrieval: ${Math.round(
+          performance.now() -
+            retrievalStartedAt
+        )}ms`
+      );
+    }
+
+    console.log(
+      "Assignment context selection:",
+      {
+        wantsDocumentAssignment,
+        mentionsUploadedMaterial,
+        mentionsConversationReference,
+        continuesDocumentDiscussion:
+          mentionsConversationReference &&
+          hasDocumentMaterial,
+        hasPastedReviewTarget,
+        explicitOverride:
+          hasPastedReviewTarget &&
+          mentionsUploadedMaterial,
+        hasContext:
+          assignmentContext.length > 0,
+        contextLength:
+          assignmentContext.length,
+        modifiesPreviousGuidance:
+          state.assignmentData !== null,
+      }
+    );
+
+    /*
+     * Follow-up modifications reuse the
+     * checkpointed previous guidance so changes
+     * such as "make it shorter" stay connected
+     * to the existing conversation. No separate
+     * memory system is involved.
+     */
+    const previousAssignment =
+      state.assignmentData;
+
+    const recentMessages = (
+      state.messages ?? []
+    ).slice(-4);
+
+    const conversation =
+      recentMessages
+        .map((message) => {
+          const type =
+            message._getType();
+
+          if (
+            type !== "human" &&
+            type !== "ai"
+          ) {
+            return null;
+          }
+
+          const content =
+            typeof message.content ===
+            "string"
+              ? message.content
+              : String(
+                  message.content
+                );
+
+          const speaker =
+            type === "human"
+              ? "USER"
+              : "ASSISTANT";
+
+          return `${speaker}: ${content
+            .replace(/\s+/g, " ")
+            .slice(0, 400)}`;
+        })
+        .filter(
+          (line): line is string =>
+            line !== null
+        )
+        .join("\n");
+
+    const guidance =
+      await generateAssignmentGuidance({
+        request:
+          userMessage,
+
+        context:
+          assignmentContext,
+
+        previousAssignment,
+
+        conversation,
+      });
+
+    const visibleResponse =
+      renderAssignmentMarkdown(
+        guidance
+      );
+
+    return {
+      response:
+        visibleResponse,
+
+      assignmentTopic:
+        userMessage,
+
+      assignmentContext,
+
+      assignmentData:
+        guidance,
+
+      documentCitations:
+        assignmentCitations,
+
+      error: null,
+    };
+  } catch (error) {
+    console.error(
+      "Assignment assistant failed:",
+      error
+    );
+
+    return {
+      response:
+        "I couldn't work through the assignment right now. Please try again.",
+      error:
+        "Assignment guidance generation failed.",
     };
   }
 }
@@ -1741,6 +2320,10 @@ export const studyMateGraph =
       revisionNode
     )
     .addNode(
+      "assignment",
+      assignmentNode
+    )
+    .addNode(
       "verify_web",
       verificationNode
     )
@@ -1762,6 +2345,7 @@ export const studyMateGraph =
         quiz: "quiz",
         planner: "planner",
         revision: "revision",
+        assignment: "assignment",
       }
     )
     .addEdge(
@@ -1790,6 +2374,10 @@ export const studyMateGraph =
     )
     .addEdge(
       "revision",
+      END
+    )
+    .addEdge(
+      "assignment",
       END
     )
     .addEdge(

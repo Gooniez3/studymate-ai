@@ -135,7 +135,15 @@ ${topic}
     await createAIStructuredCompletion(
       messages,
       quizSchema,
-      "studymate_quiz"
+      "studymate_quiz",
+
+      /*
+       * Quizzes are routine structured output -
+       * the balanced role avoids full reasoning
+       * latency; Zod validation protects the
+       * shape and escalation handles failures.
+       */
+      { modelRole: "balanced" }
     );
 
   return {

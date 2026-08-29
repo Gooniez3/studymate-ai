@@ -45,6 +45,16 @@ export type AICompletionOptions = {
   preferFastModel?: boolean;
 
   /*
+   * Explicit model role override. When set,
+   * it wins over preferFastModel. Structured
+   * agents pass "balanced" so ordinary
+   * educational output avoids paying full
+   * reasoning latency unless escalation is
+   * required.
+   */
+  modelRole?: AIModelRole;
+
+  /*
    * When provided, completions stream token
    * deltas to this callback while the full
    * text is still returned as usual.
@@ -100,6 +110,18 @@ const STRONG_CHAIN: AIAttempt[] = [
     model: "gemini-2.5-flash",
   },
   {
+    /*
+     * Interactive-latency tier: when Groq and
+     * Gemini Flash are both unavailable, this
+     * verified Flash-Lite serves streaming and
+     * structured requests in ~2.5-4.4s instead
+     * of leaving the free OpenRouter fallback
+     * (tens of seconds) as the only option.
+     */
+    provider: "gemini",
+    model: "gemini-3.1-flash-lite",
+  },
+  {
     provider: "openrouter",
     model: OPENROUTER_MODELS.primary,
   },
@@ -111,8 +133,17 @@ const FAST_CHAIN: AIAttempt[] = [
     model: "openai/gpt-oss-20b",
   },
   {
+    /*
+     * gemini-2.5-flash-lite began returning
+     * "no longer available" for new usage;
+     * gemini-3.1-flash-lite is the verified
+     * replacement (Aug 2026): supports
+     * responseJsonSchema structured output
+     * with thinkingBudget: 0, ~770ms round
+     * trip on routing-sized prompts.
+     */
     provider: "gemini",
-    model: "gemini-2.5-flash-lite",
+    model: "gemini-3.1-flash-lite",
   },
 ];
 
@@ -129,8 +160,147 @@ function getConfiguredProvider(): AIProvider {
   return "groq";
 }
 
+/*
+ * ============================================================
+ * Model roles
+ *
+ * FAST: routing, verification, query rewriting.
+ * BALANCED: ordinary structured educational
+ * output (quiz, planner, revision, assignment).
+ * Runs the strong Groq models with reduced
+ * reasoning effort so a 120B reasoning model is
+ * not left generating long thought traces for
+ * routine structured JSON, and adds a fast
+ * Gemini Flash-Lite tier before any slow
+ * last-resort model.
+ *
+ * STRONG: escalation path - full reasoning on
+ * Groq plus the OpenRouter free fallback. Only
+ * reached when balanced attempts fail
+ * validation or availability.
+ * ============================================================
+ */
+export type AIModelRole =
+  | "fast"
+  | "balanced"
+  | "strong";
+
+const BALANCED_CHAIN: AIAttempt[] = [
+  {
+    provider: "groq",
+    model: "openai/gpt-oss-120b",
+  },
+  {
+    provider: "groq",
+    model: "openai/gpt-oss-20b",
+  },
+  {
+    provider: "gemini",
+    model: "gemini-2.5-flash",
+  },
+  {
+    provider: "gemini",
+    model: "gemini-3.1-flash-lite",
+  },
+];
+
+/*
+ * Per-attempt timeouts (ms). A provider may
+ * never hang a request indefinitely; on
+ * timeout the attempt is classified as
+ * retryable and the chain moves on.
+ */
+const ROLE_TIMEOUT_MS: Record<
+  AIModelRole,
+  number
+> = {
+  fast: 10_000,
+
+  balanced: 30_000,
+
+  strong: 45_000,
+};
+
+/*
+ * Per provider/model in-memory cooldown.
+ * When an attempt fails with a rate limit,
+ * quota exhaustion, or a retired-model error,
+ * that exact model is skipped for a short
+ * window instead of being retried on every
+ * request. Purely in-memory: expires by
+ * itself, safe per serverless instance, and
+ * degrades gracefully when an instance
+ * restarts (cooldowns are simply forgotten).
+ */
+const PROVIDER_COOLDOWN_MS = 60_000;
+
+const cooldownUntil = new Map<
+  string,
+  number
+>();
+
+function attemptKey(
+  attempt: AIAttempt
+): string {
+  return `${attempt.provider}:${attempt.model}`;
+}
+
+function markCooldown(attempt: AIAttempt) {
+  const ttl =
+    _providerTestHooks.cooldownMs ??
+    PROVIDER_COOLDOWN_MS;
+
+  cooldownUntil.set(
+    attemptKey(attempt),
+
+    Date.now() + ttl
+  );
+}
+
+function cooldownRemainingSeconds(
+  attempt: AIAttempt
+): number {
+  const until = cooldownUntil.get(
+    attemptKey(attempt)
+  );
+
+  if (!until) {
+    return 0;
+  }
+
+  const remaining =
+    until - Date.now();
+
+  if (remaining <= 0) {
+    cooldownUntil.delete(
+      attemptKey(attempt)
+    );
+
+    return 0;
+  }
+
+  return Math.ceil(remaining / 1000);
+}
+
+/*
+ * Test-only: clears every cooldown so tests
+ * start from a clean slate.
+ */
+export function _testResetProviderCooldowns() {
+  cooldownUntil.clear();
+}
+
+function isCoolingDown(
+  attempt: AIAttempt
+): boolean {
+  return (
+    cooldownRemainingSeconds(attempt) >
+    0
+  );
+}
+
 function getAttemptChain(
-  role: "fast" | "strong"
+  role: AIModelRole
 ): AIAttempt[] {
   /*
    * Compatibility mode: AI_PROVIDER=openrouter
@@ -155,9 +325,15 @@ function getAttemptChain(
     ];
   }
 
-  return role === "fast"
-    ? FAST_CHAIN
-    : STRONG_CHAIN;
+  if (role === "fast") {
+    return FAST_CHAIN;
+  }
+
+  if (role === "balanced") {
+    return BALANCED_CHAIN;
+  }
+
+  return STRONG_CHAIN;
 }
 
 /*
@@ -214,20 +390,62 @@ export function classifyProviderError(
     };
   }
 
+  if (
+    error instanceof Error &&
+    (error.name ===
+      "AttemptTimeoutError" ||
+      error.name === "AbortError")
+  ) {
+    return {
+      retryable: true,
+      reason: "timeout",
+    };
+  }
+
   const anyError = error as {
-    status?: number;
+    status?: unknown;
+
+    statusCode?: unknown;
+
     code?: unknown;
+
     message?: string;
+
     name?: string;
+
     error?: {
       error?: { code?: string };
     };
   };
 
+  /*
+   * Providers expose the HTTP status under
+   * different names: groq-sdk uses `status`,
+   * OpenRouter's error subclasses use
+   * `statusCode`. Accept both, plus numeric
+   * `code` fields such as OpenRouter's
+   * `code: 429` on rate-limit errors.
+   */
+  const rawStatus =
+    anyError.status ??
+    anyError.statusCode;
+
   const status =
-    typeof anyError.status ===
-    "number"
-      ? anyError.status
+    typeof rawStatus === "number"
+      ? rawStatus
+      : typeof rawStatus ===
+          "string" &&
+        /^\d{3}$/.test(rawStatus)
+      ? Number(rawStatus)
+      : undefined;
+
+  const numericCode =
+    typeof anyError.code === "number"
+      ? anyError.code
+      : typeof anyError.code ===
+          "string" &&
+        /^\d{3}$/.test(anyError.code)
+      ? Number(anyError.code)
       : undefined;
 
   const code =
@@ -240,10 +458,13 @@ export function classifyProviderError(
   const message =
     anyError.message ?? "";
 
+  const effectiveStatus =
+    status ?? numericCode;
+
   if (
-    status === 429 ||
+    effectiveStatus === 429 ||
     code === "rate_limit_exceeded" ||
-    /RESOURCE_EXHAUSTED/i.test(
+    /RESOURCE_EXHAUSTED|rate.?limit/i.test(
       message
     )
   ) {
@@ -254,8 +475,8 @@ export function classifyProviderError(
   }
 
   if (
-    (status !== undefined &&
-      status >= 500) ||
+    (effectiveStatus !== undefined &&
+      effectiveStatus >= 500) ||
     code === "overloaded" ||
     /UNAVAILABLE|overloaded/i.test(
       message
@@ -349,8 +570,8 @@ export function classifyProviderError(
   }
 
   if (
-    status === 401 ||
-    status === 403 ||
+    effectiveStatus === 401 ||
+    effectiveStatus === 403 ||
     /API key|API_KEY_INVALID|permission/i.test(
       message
     )
@@ -364,8 +585,8 @@ export function classifyProviderError(
   return {
     retryable: false,
     reason:
-      status !== undefined
-        ? `http_${status}`
+      effectiveStatus !== undefined
+        ? `http_${effectiveStatus}`
         : "unknown_error",
   };
 }
@@ -384,6 +605,13 @@ class ProviderFatalError extends Error {
   }
 }
 
+/*
+ * Raised when an attempt exceeds its role
+ * timeout. The request was valid but the
+ * provider was too slow - the next attempt in
+ * the chain is legitimate, and user-perceived
+ * latency stays bounded.
+ */
 /*
  * Raised when a provider returns HTTP success
  * but no usable text (observed live with
@@ -420,6 +648,16 @@ export const _providerTestHooks = {
   geminiGenerateStream: null as null | ((model: string, params: Record<string, unknown>) => unknown),
 
   openRouterFetch: null as null | ((url: string, init: RequestInit) => Promise<Response>),
+
+  /*
+   * Test overrides for cooldown duration and
+   * per-attempt role timeouts (ms).
+   */
+  cooldownMs: null as null | number,
+
+  firstTokenTimeoutMs: null as null | number,
+
+  roleTimeoutMs: null as null | number,
 };
 
 /*
@@ -533,9 +771,16 @@ const GEMINI_SCHEMA_KEYWORDS = [
 
   "prefixItems",
 
-  "minItems",
-
-  "maxItems",
+  /*
+   * minItems/maxItems are deliberately NOT
+   * forwarded: gemini-3.1-flash-lite rejects
+   * array size constraints with HTTP 400
+   * INVALID_ARGUMENT (bisected live against
+   * studymate_study_plan - every other
+   * keyword combination passed). Zod .min/.max
+   * still enforce the caps after parsing, and
+   * agent prompts state the limits verbally.
+   */
 
   "minimum",
 
@@ -572,6 +817,252 @@ const GEMINI_SCHEMA_MAP_KEYS = [
 
   "patternProperties",
 ] as const;
+
+/*
+ * ============================================================
+ * Gemini nullable-schema normalization.
+ *
+ * zod's .nullable() renders as
+ *   { anyOf: [ {type:"integer",...}, {type:"null"} ] }
+ * Gemini responseJsonSchema rejects the JSON-Schema
+ * null type outright (HTTP 400 INVALID_ARGUMENT -
+ * observed live on studymate_study_plan, while
+ * null-free quiz/assignment schemas succeeded).
+ *
+ * Normalization drops the {"type":"null"} branch,
+ * promotes a surviving single branch to replace
+ * the anyOf, and removes the affected key from the
+ * parent `required` list (absence Ã¢â€°Ë† null). The
+ * dotted paths of every nullable field are
+ * returned so the raw Gemini response can be
+ * hydrated with nulls before Zod parsing - Zod
+ * schemas keep these keys REQUIRED, so omission
+ * would otherwise fail validation.
+ *
+ * Wildcard "*" segments stand for array items.
+ * ============================================================
+ */
+function collectNullablePaths(
+  schema: Record<string, unknown>,
+
+  prefix: string,
+
+  out: string[]
+) {
+  const properties = schema.properties as
+    | Record<string, unknown>
+    | undefined;
+
+  const required = Array.isArray(
+    schema.required
+  )
+    ? (schema.required as string[])
+    : [];
+
+  if (!properties) {
+    return;
+  }
+
+  for (const [
+    key,
+    rawSubschema,
+  ] of Object.entries(properties)) {
+    const path = prefix
+      ? `${prefix}.${key}`
+      : key;
+
+    const subschema =
+      rawSubschema as Record<
+        string,
+        unknown
+      >;
+
+    if (
+      subschema &&
+      typeof subschema === "object" &&
+      Array.isArray(subschema.anyOf) &&
+      subschema.anyOf.some(
+        (entry) =>
+          (entry as { type?: unknown })
+            ?.type === "null"
+      )
+    ) {
+      out.push(path);
+
+      continue;
+    }
+
+    if (
+      subschema &&
+      typeof subschema === "object"
+    ) {
+      if (
+        (subschema.type as string) ===
+          "array" &&
+        subschema.items
+      ) {
+        collectNullablePaths(
+          subschema.items as Record<
+            string,
+            unknown
+          >,
+
+          `${path}.*`,
+
+          out
+        );
+      } else {
+        collectNullablePaths(
+          subschema,
+
+          path,
+
+          out
+        );
+      }
+    }
+  }
+
+  void required;
+}
+
+/*
+ * Removes {"type":"null"} branches from anyOf
+ * constructs and promotes single survivors.
+ * Returns the normalized schema; nullable dot
+ * paths are collected separately by
+ * collectNullablePaths.
+ */
+function stripNullBranches(
+  node: unknown
+): unknown {
+  if (Array.isArray(node)) {
+    return node.map((entry) =>
+      stripNullBranches(entry)
+    );
+  }
+
+  if (
+    node === null ||
+    typeof node !== "object"
+  ) {
+    return node;
+  }
+
+  const source = node as Record<
+    string,
+    unknown
+  >;
+
+  let working = source;
+
+  if (
+    Array.isArray(source.anyOf)
+  ) {
+    const nonNull =
+      source.anyOf.filter(
+        (entry) =>
+          (entry as { type?: unknown })
+            ?.type !== "null"
+      );
+
+    if (nonNull.length === 1) {
+      const survivor = stripNullBranches(
+        nonNull[0]
+      ) as Record<string, unknown>;
+
+      const merged: Record<
+        string,
+        unknown
+      > = {};
+
+      for (const [
+        key,
+        value,
+      ] of Object.entries(source)) {
+        if (key === "anyOf") {
+          continue;
+        }
+
+        merged[key] =
+          stripNullBranches(value);
+      }
+
+      for (const [
+        key,
+        value,
+      ] of Object.entries(survivor)) {
+        merged[key] = value;
+      }
+
+      working = merged;
+    } else {
+      working = {
+        ...source,
+
+        anyOf: stripNullBranches(
+          source.anyOf
+        ),
+      };
+    }
+  }
+
+  const result: Record<string, unknown> =
+    {};
+
+  for (const [
+    key,
+    value,
+  ] of Object.entries(working)) {
+    result[key] =
+      key === "properties" ||
+      key === "$defs" ||
+      key === "patternProperties"
+        ? normalizePropertyMap(value)
+        : stripNullBranches(value);
+  }
+
+  return result;
+
+  function normalizePropertyMap(
+    map: unknown
+  ): unknown {
+    if (
+      map === null ||
+      typeof map !== "object" ||
+      Array.isArray(map)
+    ) {
+      return map;
+    }
+
+    const out: Record<string, unknown> =
+      {};
+
+    for (const [
+      propKey,
+      propValue,
+    ] of Object.entries(
+      map as Record<string, unknown>
+    )) {
+      out[propKey] =
+        stripNullBranches(propValue);
+    }
+
+    return out;
+  }
+}
+
+export function _testSanitizeGeminiSchema(
+  jsonSchema: unknown
+): unknown {
+  return sanitizeSchemaForGemini(jsonSchema);
+}
+
+export function _testNormalizeGeminiSchema(
+  jsonSchema: unknown
+): unknown {
+  return stripNullBranches(jsonSchema);
+}
 
 function sanitizeSchemaForGemini(
   schema: unknown
@@ -672,7 +1163,9 @@ async function geminiGenerateText(
 
   temperature: number,
 
-  maxTokens?: number
+  maxTokens?: number,
+
+  signal?: AbortSignal
 ): Promise<string> {
   const {
     systemInstruction,
@@ -689,6 +1182,8 @@ async function geminiGenerateText(
     contents,
 
     config: {
+      abortSignal: signal,
+
       /*
        * gpt-oss-style small budgets get
        * consumed by Gemini's default
@@ -752,6 +1247,64 @@ async function geminiGenerateText(
   return text;
 }
 
+/*
+ * Sets explicit nulls along a dotted path
+ * (array items use the "*" wildcard) so
+ * nullable-but-required schema keys satisfy
+ * strict Zod validation after Gemini
+ * normalization made them optional.
+ */
+export function setNullAlongPath(
+  node: unknown,
+
+  segments: string[]
+): void {
+  if (
+    node === null ||
+    typeof node !== "object"
+  ) {
+    return;
+  }
+
+  const [head, ...rest] = segments;
+
+  if (!head) {
+    return;
+  }
+
+  if (head === "*") {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        setNullAlongPath(item, rest);
+      }
+    }
+
+    return;
+  }
+
+  const record = node as Record<
+    string,
+    unknown
+  >;
+
+  if (rest.length === 0) {
+    if (!(head in record)) {
+      record[head] = null;
+    }
+
+    return;
+  }
+
+  const next = record[head];
+
+  if (
+    next &&
+    typeof next === "object"
+  ) {
+    setNullAlongPath(next, rest);
+  }
+}
+
 async function geminiGenerateStructured(
   model: string,
 
@@ -759,7 +1312,9 @@ async function geminiGenerateStructured(
 
   jsonSchema: unknown,
 
-  maxTokens?: number
+  maxTokens?: number,
+
+  signal?: AbortSignal
 ): Promise<string> {
   const {
     systemInstruction,
@@ -776,6 +1331,8 @@ async function geminiGenerateStructured(
     contents,
 
     config: {
+      abortSignal: signal,
+
       /*
        * Thinking disabled for the same reason
        * as above - structured JSON must fit
@@ -805,7 +1362,9 @@ async function geminiGenerateStructured(
 
       responseJsonSchema:
         sanitizeSchemaForGemini(
-          jsonSchema
+          stripNullBranches(
+            jsonSchema
+          )
         ),
     },
   };
@@ -841,7 +1400,34 @@ async function geminiGenerateStructured(
     );
   }
 
-  return text;
+  /*
+   * Hydration: nullable fields were made
+   * optional for Gemini (null type is not
+   * supported), so the model may omit them.
+   * Zod schemas still require these keys -
+   * re-insert explicit nulls along every
+   * collected nullable path before parsing.
+   */
+  const parsed = JSON.parse(text);
+
+  const normalized =
+    stripNullBranches(jsonSchema);
+
+  const nullablePaths: string[] = [];
+
+  collectNullablePaths(
+    normalized as Record<string, unknown>,
+
+    "",
+
+    nullablePaths
+  );
+
+  for (const path of nullablePaths) {
+    setNullAlongPath(parsed, path.split("."));
+  }
+
+  return JSON.stringify(parsed);
 }
 
 /*
@@ -870,7 +1456,9 @@ function getOpenRouterApiKey(): string {
 }
 
 async function openRouterChat(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+
+  signal?: AbortSignal
 ): Promise<{
   content: string;
 }> {
@@ -894,6 +1482,8 @@ async function openRouterChat(
         },
 
         body: JSON.stringify(body),
+
+        signal,
       }
     );
 
@@ -947,7 +1537,9 @@ async function openRouterChat(
  * ============================================================
  */
 async function groqCreate(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+
+  signal?: AbortSignal
 ): Promise<unknown> {
   if (
     _providerTestHooks.groqCreate
@@ -960,7 +1552,9 @@ async function groqCreate(
   return groq.chat.completions.create(
     args as unknown as Parameters<
       typeof groq.chat.completions.create
-    >[0]
+    >[0],
+
+    { signal } as never
   );
 }
 
@@ -971,21 +1565,27 @@ async function attemptTextCompletion(
 
   temperature: number,
 
-  maxTokens?: number
+  maxTokens?: number,
+
+  signal?: AbortSignal
 ): Promise<string> {
   if (
     attempt.provider === "groq"
   ) {
     const completion =
-      (await groqCreate({
-        model: attempt.model,
+      (await groqCreate(
+        {
+          model: attempt.model,
 
-        temperature,
+          temperature,
 
-        max_tokens: maxTokens,
+          max_tokens: maxTokens,
 
-        messages,
-      })) as {
+          messages,
+        },
+
+        signal
+      )) as {
         choices?: {
           message?: { content?: string };
         }[];
@@ -1014,20 +1614,26 @@ async function attemptTextCompletion(
 
       temperature,
 
-      maxTokens
+      maxTokens,
+
+      signal
     );
   }
 
   const { content } =
-    await openRouterChat({
-      model: attempt.model,
+    await openRouterChat(
+      {
+        model: attempt.model,
 
-      temperature,
+        temperature,
 
-      max_tokens: maxTokens,
+        max_tokens: maxTokens,
 
-      messages,
-    });
+        messages,
+      },
+
+      signal
+    );
 
   return content;
 }
@@ -1041,37 +1647,66 @@ async function attemptStructuredCompletion(
 
   jsonSchema: unknown,
 
-  maxTokens?: number
+  maxTokens?: number,
+
+  options?: {
+    signal?: AbortSignal;
+
+    reasoningEffort?:
+      | "low"
+      | "medium"
+      | "high";
+  }
 ): Promise<unknown> {
   if (
     attempt.provider === "groq"
   ) {
     const completion =
-      (await groqCreate({
-        model: attempt.model,
+      (await groqCreate(
+        {
+          model: attempt.model,
 
-        temperature: 0,
+          temperature: 0,
 
-        messages,
+          messages,
 
-        ...(maxTokens
-          ? {
-              max_tokens: maxTokens,
-            }
-          : {}),
+          ...(maxTokens
+            ? {
+                max_tokens: maxTokens,
+              }
+            : {}),
 
-        response_format: {
-          type: "json_schema",
+          /*
+           * Balanced-role structured calls run
+           * gpt-oss reasoning models with reduced
+           * thinking effort: routine structured
+           * educational JSON does not need long
+           * thought traces, and the schema plus
+           * Zod validation protect correctness.
+           */
+          ...(options?.reasoningEffort
+            ? {
+                reasoning_effort:
+                  options
+                    .reasoningEffort,
+              }
+            : {}),
 
-          json_schema: {
-            name: schemaName,
+          response_format: {
+            type: "json_schema",
 
-            strict: true,
+            json_schema: {
+              name: schemaName,
 
-            schema: jsonSchema,
+              strict: true,
+
+              schema: jsonSchema,
+            },
           },
         },
-      })) as {
+
+        options?.signal
+      )) as {
         choices?: {
           message?: { content?: string };
         }[];
@@ -1092,34 +1727,40 @@ async function attemptStructuredCompletion(
 
         jsonSchema,
 
-        maxTokens
+        maxTokens,
+
+        options?.signal
       );
 
     return raw;
   }
 
   const { content } =
-    await openRouterChat({
-      model: attempt.model,
+    await openRouterChat(
+      {
+        model: attempt.model,
 
-      temperature: 0,
+        temperature: 0,
 
-      max_tokens: maxTokens,
+        max_tokens: maxTokens,
 
-      messages,
+        messages,
 
-      response_format: {
-        type: "json_schema",
+        response_format: {
+          type: "json_schema",
 
-        json_schema: {
-          name: schemaName,
+          json_schema: {
+            name: schemaName,
 
-          strict: true,
+            strict: true,
 
-          schema: jsonSchema,
+            schema: jsonSchema,
+          },
         },
       },
-    });
+
+      options?.signal
+    );
 
   return content;
 }
@@ -1148,21 +1789,27 @@ async function attemptStreamStart(
 
   maxTokens: number,
 
-  onToken: (delta: string) => void
+  onToken: (delta: string) => void,
+
+  signal?: AbortSignal
 ): Promise<StreamStartResult> {
   const consumeGroqStream =
     async (): Promise<string> => {
-      const stream = await groqCreate({
-        model: attempt.model,
+      const stream = await groqCreate(
+        {
+          model: attempt.model,
 
-        temperature,
+          temperature,
 
-        max_tokens: maxTokens,
+          max_tokens: maxTokens,
 
-        messages,
+          messages,
 
-        stream: true,
-      });
+          stream: true,
+        },
+
+        signal
+      );
 
       const iterable =
         stream as AsyncIterable<unknown>;
@@ -1242,6 +1889,8 @@ async function attemptStreamStart(
           thinkingConfig: {
             thinkingBudget: 0,
           },
+
+          abortSignal: signal,
 
           temperature,
 
@@ -1396,8 +2045,80 @@ function isAttemptConfigured(
  * Chain runners
  * ============================================================
  */
+/*
+ * Bounds a single attempt so no provider can
+ * hang a request indefinitely. The abort
+ * controller is owned by the caller so the
+ * underlying request is cancelled, not just
+ * abandoned.
+ */
+function shouldCooldown(
+  reason: string
+): boolean {
+  /*
+   * Only cooldown on conditions that will
+   * persist for a while: quota/rate limits,
+   * retired models, exhausted balances.
+   * Transient server errors and timeouts are
+   * retried normally on the next request.
+   */
+  return (
+    reason === "rate_limit" ||
+    reason === "model_not_found" ||
+    reason === "payment_required"
+  );
+}
+
+/*
+ * Hard wall-clock bound for a single attempt.
+ * The AbortController cancels well-behaved
+ * SDK requests; this race additionally bounds
+ * any caller that ignores the signal.
+ */
+function withAttemptTimeout<
+  T
+>(
+  promise: Promise<T>,
+
+  role: AIModelRole
+): Promise<T> {
+  const timeoutMs =
+    _providerTestHooks.roleTimeoutMs ??
+    ROLE_TIMEOUT_MS[role];
+
+  let timer:
+    | ReturnType<typeof setTimeout>
+    | undefined;
+
+  const timeout =
+    new Promise<never>(
+      (_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(
+            `attempt timed out after ${timeoutMs}ms`
+          );
+
+          error.name =
+            "AttemptTimeoutError";
+
+          reject(error);
+        }, timeoutMs);
+      }
+    );
+
+  return Promise.race([
+    promise,
+
+    timeout,
+  ]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }) as Promise<T>;
+}
+
 async function runTextChain(
-  role: "fast" | "strong",
+  role: AIModelRole,
 
   messages: ChatMessage[],
 
@@ -1431,26 +2152,62 @@ async function runTextChain(
       continue;
     }
 
+    const remainingCooldown =
+      cooldownRemainingSeconds(attempt);
+
+    if (remainingCooldown > 0) {
+      logAi(
+        `skip role=${role} provider=${attempt.provider} model=${attempt.model} reason=cooldown remaining=${remainingCooldown}s`
+      );
+
+      continue;
+    }
+
     attemptedAny = true;
 
     logAi(
-      `trying role=${role} provider=${attempt.provider} model=${attempt.model}`
+      `attempt-start role=${role} provider=${attempt.provider} model=${attempt.model}`
+    );
+
+    const startedAt =
+      performance.now();
+
+    const controller =
+      new AbortController();
+
+    const abortTimer = setTimeout(
+      () =>
+        controller.abort(),
+
+      (_providerTestHooks.roleTimeoutMs ?? ROLE_TIMEOUT_MS[role])
     );
 
     try {
       const content =
-        await attemptTextCompletion(
-          attempt,
+        await withAttemptTimeout(
+          attemptTextCompletion(
+            attempt,
 
-          messages,
+            messages,
 
-          temperature,
+            temperature,
 
-          maxTokens
+            maxTokens,
+
+            controller.signal
+          ),
+
+          role
         );
 
+      clearTimeout(abortTimer);
+
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
+
       logAi(
-        `success role=${role} provider=${attempt.provider} model=${attempt.model}`
+        `attempt-success role=${role} provider=${attempt.provider} model=${attempt.model} duration=${duration}ms`
       );
 
       return {
@@ -1461,7 +2218,13 @@ async function runTextChain(
         content,
       };
     } catch (error) {
+      clearTimeout(abortTimer);
+
       lastError = error;
+
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
 
       const classification =
         classifyProviderError(error);
@@ -1470,14 +2233,22 @@ async function runTextChain(
         !classification.retryable
       ) {
         logAi(
-          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model}`
+          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model} duration=${duration}ms`
         );
 
         throw error;
       }
 
+      if (
+        shouldCooldown(
+          classification.reason
+        )
+      ) {
+        markCooldown(attempt);
+      }
+
       logAi(
-        `fallback role=${role} reason=${classification.reason} from=${attempt.provider}/${attempt.model}`
+        `attempt-failed role=${role} provider=${attempt.provider} model=${attempt.model} reason=${classification.reason} duration=${duration}ms`
       );
     }
   }
@@ -1499,7 +2270,7 @@ async function runTextChain(
 async function runStructuredChain<
   T extends Record<string, unknown>
 >(
-  role: "fast" | "strong",
+  role: AIModelRole,
 
   messages: ChatMessage[],
 
@@ -1512,8 +2283,30 @@ async function runStructuredChain<
   const jsonSchema =
     z.toJSONSchema(schema);
 
+  /*
+   * Smart escalation: the balanced role walks
+   * its fast structured chain first; if every
+   * balanced attempt fails (availability or
+   * validation), the strong chain - including
+   * full-reasoning Groq and the OpenRouter
+   * fallback - is appended. Models that failed
+   * with rate limits are already cooling down,
+   * so they are skipped rather than retried;
+   * a model that produced INVALID output is
+   * not cooled down and therefore gets one
+   * escalation retry at full reasoning effort.
+   * Rate-limited models skip instantly via
+   * cooldown, so chain overlap never doubles
+   * quota failures.
+   */
   const attempts =
-    getAttemptChain(role);
+    role === "balanced"
+      ? [
+          ...BALANCED_CHAIN,
+
+          ...STRONG_CHAIN,
+        ]
+      : getAttemptChain(role);
 
   let lastError: unknown;
 
@@ -1530,15 +2323,40 @@ async function runStructuredChain<
       continue;
     }
 
+    const remainingCooldown =
+      cooldownRemainingSeconds(attempt);
+
+    if (remainingCooldown > 0) {
+      logAi(
+        `skip role=${role} provider=${attempt.provider} model=${attempt.model} reason=cooldown remaining=${remainingCooldown}s`
+      );
+
+      continue;
+    }
+
     attemptedAny = true;
 
     logAi(
-      `trying role=${role} provider=${attempt.provider} model=${attempt.model} task=structured:${schemaName}`
+      `attempt-start role=${role} provider=${attempt.provider} model=${attempt.model} task=structured:${schemaName}`
+    );
+
+    const startedAt =
+      performance.now();
+
+    const controller =
+      new AbortController();
+
+    const abortTimer = setTimeout(
+      () =>
+        controller.abort(),
+
+      (_providerTestHooks.roleTimeoutMs ?? ROLE_TIMEOUT_MS[role])
     );
 
     try {
       const raw =
-        await attemptStructuredCompletion(
+        await withAttemptTimeout(
+        attemptStructuredCompletion(
           attempt,
 
           messages,
@@ -1547,8 +2365,21 @@ async function runStructuredChain<
 
           jsonSchema,
 
-          maxTokens
-        );
+          maxTokens,
+
+          {
+            signal: controller.signal,
+
+            reasoningEffort:
+              role === "balanced" &&
+              attempt.provider === "groq"
+                ? "low"
+                : undefined,
+          }
+        ),
+
+        role
+      );
 
       if (
         typeof raw !== "string" ||
@@ -1569,8 +2400,14 @@ async function runStructuredChain<
           JSON.parse(raw)
         );
 
+      clearTimeout(abortTimer);
+
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
+
       logAi(
-        `success role=${role} provider=${attempt.provider} model=${attempt.model} task=structured:${schemaName}`
+        `attempt-success role=${role} provider=${attempt.provider} model=${attempt.model} task=structured:${schemaName} duration=${duration}ms`
       );
 
       return {
@@ -1583,6 +2420,10 @@ async function runStructuredChain<
     } catch (error) {
       lastError = error;
 
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
+
       const classification =
         classifyProviderError(error);
 
@@ -1594,23 +2435,35 @@ async function runStructuredChain<
             "Unexpected token"
           ));
 
+      clearTimeout(abortTimer);
+
       if (
         !classification.retryable &&
         !zodInvalid
       ) {
+        clearTimeout(abortTimer);
+
         logAi(
-          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model}`
+          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model} duration=${duration}ms`
         );
 
         throw error;
       }
 
+      if (
+        shouldCooldown(
+          classification.reason
+        )
+      ) {
+        markCooldown(attempt);
+      }
+
       logAi(
-        `fallback role=${role} reason=${
+        `attempt-failed role=${role} provider=${attempt.provider} model=${attempt.model} reason=${
           zodInvalid
             ? "output_schema"
             : classification.reason
-        } from=${attempt.provider}/${attempt.model}`
+        } duration=${duration}ms`
       );
     }
   }
@@ -1624,8 +2477,28 @@ async function runStructuredChain<
   throw lastError;
 }
 
+/*
+ * Interactive streaming latency bounds.
+ *
+ * FIRST_TOKEN: a provider that has not emitted
+ * anything within this window is abandoned and
+ * the chain falls through - the user must see
+ * output quickly.
+ *
+ * ACTIVE_STREAM: once tokens are flowing, do
+ * NOT interrupt a healthy long generation;
+ * this generous cap only aborts a stream that
+ * has stalled indefinitely. Mid-stream aborts
+ * resolve to the partial answer (never a
+ * restart).
+ */
+const FIRST_TOKEN_TIMEOUT_MS = 8_000;
+
+const ACTIVE_STREAM_TIMEOUT_MS =
+  180_000;
+
 async function runStreamChain(
-  role: "fast" | "strong",
+  role: AIModelRole,
 
   messages: ChatMessage[],
 
@@ -1669,13 +2542,8 @@ async function runStreamChain(
    */
   let emittedAny = false;
 
-  const guardedOnToken = (
-    delta: string
-  ) => {
-    emittedAny = true;
-
-    onToken(delta);
-  };
+  const chainStartedAt =
+    performance.now();
 
   for (const attempt of attempts) {
     if (
@@ -1688,11 +2556,87 @@ async function runStreamChain(
       continue;
     }
 
+    const remainingCooldown =
+      cooldownRemainingSeconds(attempt);
+
+    if (remainingCooldown > 0) {
+      logAi(
+        `skip role=${role} provider=${attempt.provider} model=${attempt.model} reason=cooldown remaining=${remainingCooldown}s`
+      );
+
+      continue;
+    }
+
     attemptedAny = true;
 
     logAi(
-      `trying role=${role} provider=${attempt.provider} model=${attempt.model} mode=stream`
+      `attempt-start role=${role} provider=${attempt.provider} model=${attempt.model} mode=stream`
     );
+
+    const startedAt =
+      performance.now();
+
+    const controller =
+      new AbortController();
+
+    /*
+     * Phase 1 - first token. A provider that
+     * has not produced ANY user-visible output
+     * within the interactive window is aborted
+     * and the chain falls through. Healthy
+     * streams disarm this on their first delta.
+     */
+    let firstTokenTimer: ReturnType<
+      typeof setTimeout
+    > | undefined;
+
+    let activeStreamTimer:
+      | ReturnType<typeof setTimeout>
+      | undefined;
+
+    let firstTokenReject: (() => void) | null =
+      null;
+
+    const firstTokenTimeoutMs =
+      _providerTestHooks.firstTokenTimeoutMs ??
+      FIRST_TOKEN_TIMEOUT_MS;
+
+    firstTokenTimer = setTimeout(() => {
+      if (!emittedAny) {
+        controller.abort();
+
+        firstTokenReject?.();
+      }
+    }, firstTokenTimeoutMs);
+
+    const guardedOnTokenWithPhases = (
+      delta: string
+    ) => {
+      if (!emittedAny) {
+        /*
+         * First token arrived in time - disarm
+         * the interactive timer and arm the much
+         * larger stall guard for the rest of the
+         * stream.
+         */
+        clearTimeout(firstTokenTimer);
+
+        firstTokenTimer = undefined;
+
+        if (!activeStreamTimer) {
+          activeStreamTimer = setTimeout(
+            () =>
+              controller.abort(),
+
+            ACTIVE_STREAM_TIMEOUT_MS
+          );
+        }
+      }
+
+      emittedAny = true;
+
+      onToken(delta);
+    };
 
     try {
       const started =
@@ -1705,14 +2649,57 @@ async function runStreamChain(
 
           maxTokens,
 
-          guardedOnToken
+          guardedOnTokenWithPhases,
+
+          controller.signal
         );
 
-      const content =
-        await started.consume();
+      /*
+       * Bound the pre-token hang case even when
+       * a provider ignores the abort signal:
+       * race consumption against the first-token
+       * rejection. Post-first-token, this race
+       * never fires and long healthy streams are
+       * untouched (the active-stream abort is
+       * handled inside the consumer, which
+       * resolves to the partial answer).
+       */
+      const preTokenRejection =
+        new Promise<never>(
+          (_, reject) => {
+            firstTokenReject = () => {
+              const error = new Error(
+                `no first token within ${firstTokenTimeoutMs}ms`
+              );
+
+              error.name =
+                "AttemptTimeoutError";
+
+              reject(error);
+            };
+          }
+        );
+
+      void preTokenRejection.catch(
+        () => undefined
+      );
+
+      const content = await Promise.race([
+        started.consume(),
+
+        preTokenRejection,
+      ]);
+
+      clearTimeout(firstTokenTimer);
+
+      clearTimeout(activeStreamTimer);
+
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
 
       logAi(
-        `success role=${role} provider=${attempt.provider} model=${attempt.model} mode=stream`
+        `attempt-success role=${role} provider=${attempt.provider} model=${attempt.model} mode=stream duration=${duration}ms`
       );
 
       return {
@@ -1723,16 +2710,27 @@ async function runStreamChain(
         content,
       };
     } catch (error) {
+      clearTimeout(firstTokenTimer);
+
+      clearTimeout(activeStreamTimer);
+
       lastError = error;
+
+      const duration = Math.round(
+        performance.now() - startedAt
+      );
 
       if (emittedAny) {
         /*
          * Tokens already reached the user -
          * restarting generation on another
          * provider would duplicate the answer.
+         * The stream consumer itself returns
+         * partial content on mid-stream errors,
+         * so this path is a safety net only.
          */
         logAi(
-          `stream-failed-after-tokens role=${role} provider=${attempt.provider} model=${attempt.model}`
+          `stream-failed-after-tokens role=${role} provider=${attempt.provider} model=${attempt.model} duration=${duration}ms`
         );
 
         throw error;
@@ -1745,14 +2743,22 @@ async function runStreamChain(
         !classification.retryable
       ) {
         logAi(
-          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model}`
+          `abort role=${role} reason=${classification.reason} provider=${attempt.provider} model=${attempt.model} duration=${duration}ms`
         );
 
         throw error;
       }
 
+      if (
+        shouldCooldown(
+          classification.reason
+        )
+      ) {
+        markCooldown(attempt);
+      }
+
       logAi(
-        `fallback role=${role} reason=${classification.reason} before-first-token from=${attempt.provider}/${attempt.model}`
+        `attempt-failed role=${role} provider=${attempt.provider} model=${attempt.model} reason=${classification.reason} before-first-token duration=${duration}ms`
       );
     }
   }
@@ -1763,10 +2769,22 @@ async function runStreamChain(
     );
   }
 
+  /*
+   * Graceful exhaustion: every configured
+   * provider was tried and failed. Fail fast
+   * with a clear internal signal instead of
+   * letting callers wait on anything else.
+   */
+  logAi(
+    `exhausted role=${role} duration=${Math.round(
+      performance.now() - chainStartedAt
+    )}ms - all providers unavailable`
+  );
+
   throw (
     lastError ??
-    new Error(
-      "No AI model was available."
+    new ProviderFatalError(
+      "All AI providers are unavailable."
     )
   );
 }
@@ -1894,9 +2912,11 @@ export async function createAICompletion(
     );
   }
 
-  const role = options.preferFastModel
-    ? "fast"
-    : "strong";
+  const role: AIModelRole =
+    options.modelRole ??
+    (options.preferFastModel
+      ? "fast"
+      : "strong");
 
   if (options.onToken) {
     return runStreamChain(
@@ -1933,6 +2953,8 @@ export async function createAIStructuredCompletion<
    */
   options?: {
     preferFastModel?: boolean;
+
+    modelRole?: AIModelRole;
 
     maxTokens?: number;
   }
@@ -2003,9 +3025,11 @@ export async function createAIStructuredCompletion<
     );
   }
 
-  const role = options?.preferFastModel
-    ? "fast"
-    : "strong";
+  const role: AIModelRole =
+    options?.modelRole ??
+    (options?.preferFastModel
+      ? "fast"
+      : "strong");
 
   return runStructuredChain<T>(
     role,
