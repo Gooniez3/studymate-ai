@@ -64,6 +64,9 @@ export default function ChatPage() {
   const applyTheme = (theme: AppTheme) => {
     document.documentElement.classList.remove("dark", "light", "system");
     document.documentElement.classList.add(theme || "system");
+    try {
+      localStorage.setItem("studymate-theme", theme || "system");
+    } catch {}
   };
 
   const loadUserProfile = async () => {

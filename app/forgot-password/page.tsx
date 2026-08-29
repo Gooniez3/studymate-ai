@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, CheckCircle } from "lucide-react";
+import AuthLayout from "@/components/auth/AuthLayout";
 
 type Step = "email" | "code" | "password" | "success";
 
@@ -93,169 +94,167 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#0a0a0a] px-4">
-      <div className="w-full max-w-md">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-2xl">
-            📚
-          </div>
+    <AuthLayout>
+      <div className="mb-8 text-center lg:text-left">
+        <h1 className="text-2xl font-semibold text-white">
+          {step === "email" && "Reset your password"}
+          {step === "code" && "Check your email"}
+          {step === "password" && "Create a new password"}
+          {step === "success" && "Password updated"}
+        </h1>
 
-          <h1 className="text-3xl font-semibold text-white">
-            {step === "email" && "Forgot password?"}
-            {step === "code" && "Verify your email"}
-            {step === "password" && "Create new password"}
-            {step === "success" && "Password reset"}
-          </h1>
-
-          <p className="mt-3 text-sm leading-relaxed text-slate-400">
-            {step === "email" &&
-              "Enter your email and we’ll send you a reset code."}
-            {step === "code" &&
-              "We’ve sent a 6-digit code to your email. Enter it below to continue."}
-            {step === "password" &&
-              "Choose a strong new password for your account."}
-            {step === "success" &&
-              "Your password has been updated successfully."}
-          </p>
-        </div>
-
-        {error && (
-          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
-            {error}
-          </div>
-        )}
-
-        {step === "email" && (
-          <form onSubmit={handleSendCode} className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-sm text-slate-400">
-                Email
-              </label>
-
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                required
-                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-blue-500"
-              />
-            </div>
-
-            <button
-              disabled={loading}
-              className="w-full rounded-xl bg-blue-600 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-60"
-            >
-              {loading ? "Sending..." : "Send reset code"}
-            </button>
-
-            <p className="pt-3 text-center text-sm text-slate-500">
-              Remember password?{" "}
-              <Link href="/login" className="text-blue-400 hover:text-blue-300">
-                Sign in
-              </Link>
-            </p>
-          </form>
-        )}
-
-        {step === "code" && (
-          <div className="space-y-5">
-            <input
-              value={code}
-              onChange={(e) =>
-                setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
-              }
-              inputMode="numeric"
-              placeholder="000000"
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-4 text-center text-3xl font-semibold tracking-[0.4em] text-white outline-none transition focus:border-blue-500"
-            />
-
-            <button
-              onClick={handleContinueCode}
-              className="w-full rounded-full bg-white py-3 text-sm font-medium text-black transition hover:bg-slate-200"
-            >
-              Continue
-            </button>
-
-            <button
-              onClick={() => setStep("email")}
-              className="w-full rounded-full border border-slate-700 py-3 text-sm font-medium text-white transition hover:bg-slate-900"
-            >
-              Go Back
-            </button>
-          </div>
-        )}
-
-        {step === "password" && (
-          <form onSubmit={handleResetPassword} className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-sm text-slate-400">
-                New password
-              </label>
-
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Create a strong password"
-                  required
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 pr-11 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-blue-500"
-                />
-
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
-                >
-                  {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-              <p className="mb-2 text-xs font-medium text-slate-400">
-                Password must contain:
-              </p>
-
-              <div className="space-y-1">
-                {passwordRules.map((rule) => (
-                  <div
-                    key={rule.label}
-                    className={`text-xs ${
-                      rule.valid ? "text-emerald-400" : "text-slate-500"
-                    }`}
-                  >
-                    {rule.valid ? "✓" : "○"} {rule.label}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <button
-              disabled={loading}
-              className="w-full rounded-xl bg-blue-600 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-60"
-            >
-              {loading ? "Resetting..." : "Reset password"}
-            </button>
-          </form>
-        )}
-
-        {step === "success" && (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5 text-center">
-            <p className="text-sm text-emerald-400">
-              You can now sign in with your new password.
-            </p>
-
-            <Link
-              href="/login"
-              className="mt-5 inline-block text-sm font-medium text-blue-400 hover:text-blue-300"
-            >
-              Back to login
-            </Link>
-          </div>
-        )}
+        <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
+          {step === "email" &&
+            "Enter your email and we'll send you a 6-digit reset code."}
+          {step === "code" &&
+            "We sent a 6-digit verification code to your email."}
+          {step === "password" &&
+            "Choose a strong password for your account."}
+          {step === "success" &&
+            "Your password has been updated successfully."}
+        </p>
       </div>
-    </main>
+
+      {error && (
+        <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
+      {step === "email" && (
+        <form onSubmit={handleSendCode} className="space-y-4">
+          <div>
+            <label className="mb-1.5 block text-sm text-slate-300">
+              Email
+            </label>
+
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              required
+              className="h-11 w-full rounded-xl border border-slate-700/80 bg-slate-800/50 px-4 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-blue-500"
+            />
+          </div>
+
+          <button
+            disabled={loading}
+            className="h-11 w-full rounded-xl bg-blue-600 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-60"
+          >
+            {loading ? "Sending..." : "Send reset code"}
+          </button>
+
+          <p className="pt-2 text-center text-sm text-slate-500">
+            Remember your password?{" "}
+            <Link href="/login" className="text-blue-400 hover:text-blue-300">
+              Sign in
+            </Link>
+          </p>
+        </form>
+      )}
+
+      {step === "code" && (
+        <div className="space-y-4">
+          <input
+            value={code}
+            onChange={(e) =>
+              setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+            }
+            inputMode="numeric"
+            placeholder="000000"
+            className="h-14 w-full rounded-xl border border-slate-700/80 bg-slate-800/50 px-4 text-center text-3xl font-semibold tracking-[0.35em] text-white outline-none transition focus:border-blue-500"
+          />
+
+          <button
+            onClick={handleContinueCode}
+            className="h-11 w-full rounded-xl bg-blue-600 text-sm font-medium text-white transition hover:bg-blue-500"
+          >
+            Continue
+          </button>
+
+          <button
+            onClick={() => setStep("email")}
+            className="h-11 w-full rounded-xl border border-slate-700/80 bg-slate-800/30 text-sm font-medium text-slate-300 transition hover:bg-slate-800/60"
+          >
+            Go back
+          </button>
+        </div>
+      )}
+
+      {step === "password" && (
+        <form onSubmit={handleResetPassword} className="space-y-4">
+          <div>
+            <label className="mb-1.5 block text-sm text-slate-300">
+              New password
+            </label>
+
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Create a strong password"
+                required
+                className="h-11 w-full rounded-xl border border-slate-700/80 bg-slate-800/50 px-4 pr-11 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-blue-500"
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800/80 bg-slate-800/30 p-3.5">
+            <p className="mb-2 text-xs font-medium text-slate-400">
+              Password requirements
+            </p>
+
+            <div className="space-y-1.5">
+              {passwordRules.map((rule) => (
+                <div
+                  key={rule.label}
+                  className={`flex items-center gap-2 text-xs ${
+                    rule.valid ? "text-emerald-400" : "text-slate-500"
+                  }`}
+                >
+                  <span className="w-3.5 text-center">
+                    {rule.valid ? "✓" : "○"}
+                  </span>
+                  {rule.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <button
+            disabled={loading}
+            className="h-11 w-full rounded-xl bg-blue-600 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-60"
+          >
+            {loading ? "Resetting..." : "Reset password"}
+          </button>
+        </form>
+      )}
+
+      {step === "success" && (
+        <div className="text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15">
+            <CheckCircle size={24} className="text-emerald-400" />
+          </div>
+
+          <Link
+            href="/login"
+            className="inline-block h-11 rounded-xl bg-blue-600 px-6 text-sm font-medium text-white transition hover:bg-blue-500"
+          >
+            Back to login
+          </Link>
+        </div>
+      )}
+    </AuthLayout>
   );
 }

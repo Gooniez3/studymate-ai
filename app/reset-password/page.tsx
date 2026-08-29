@@ -3,7 +3,8 @@
 import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, CheckCircle } from "lucide-react";
+import AuthLayout from "@/components/auth/AuthLayout";
 
 function ResetPasswordContent() {
   const searchParams = useSearchParams();
@@ -102,132 +103,128 @@ function ResetPasswordContent() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#0a0a0a] px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-2xl">
-            📚
+    <AuthLayout>
+      <div className="mb-8 text-center lg:text-left">
+        <h1 className="text-2xl font-semibold text-white">
+          {success ? "Password updated" : "Create a new password"}
+        </h1>
+
+        <p className="mt-1.5 text-sm text-slate-400">
+          {success
+            ? "Your password has been reset successfully."
+            : "Choose a strong new password for your StudyMate AI account."}
+        </p>
+      </div>
+
+      {success ? (
+        <div className="text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15">
+            <CheckCircle size={24} className="text-emerald-400" />
           </div>
 
-          <h1 className="text-2xl font-semibold text-white">
-            Reset password
-          </h1>
-
-          <p className="mt-1 text-sm text-slate-400">
-            Create a new strong password for your
-            account.
-          </p>
+          <Link
+            href="/login"
+            className="inline-block h-11 rounded-xl bg-blue-600 px-6 text-sm font-medium text-white transition hover:bg-blue-500"
+          >
+            Back to login
+          </Link>
         </div>
+      ) : (
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-3.5"
+        >
+          {error && (
+            <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
+              {error}
+            </div>
+          )}
 
-        {success ? (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5 text-center">
-            <p className="text-sm text-emerald-400">
-              Your password has been reset
-              successfully.
+          <div>
+            <label className="mb-1.5 block text-sm text-slate-300">
+              New password
+            </label>
+
+            <div className="relative">
+              <input
+                type={
+                  showPassword
+                    ? "text"
+                    : "password"
+                }
+                value={password}
+                onChange={(e) =>
+                  setPassword(
+                    e.target.value
+                  )
+                }
+                placeholder="Create a strong password"
+                required
+                className="h-11 w-full rounded-xl border border-slate-700/80 bg-slate-800/50 px-4 pr-11 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-blue-500"
+              />
+
+              <button
+                type="button"
+                onClick={() =>
+                  setShowPassword(
+                    (prev) => !prev
+                  )
+                }
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                aria-label={
+                  showPassword
+                    ? "Hide password"
+                    : "Show password"
+                }
+              >
+                {showPassword ? (
+                  <EyeOff size={17} />
+                ) : (
+                  <Eye size={17} />
+                )}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800/80 bg-slate-800/30 p-3.5">
+            <p className="mb-2 text-xs font-medium text-slate-400">
+              Password requirements
             </p>
 
-            <Link
-              href="/login"
-              className="mt-5 inline-block text-sm font-medium text-blue-400 hover:text-blue-300"
-            >
-              Back to login
-            </Link>
-          </div>
-        ) : (
-          <form
-            onSubmit={handleSubmit}
-            className="space-y-3"
-          >
-            {error && (
-              <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
-                {error}
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1.5 block text-sm text-slate-400">
-                New password
-              </label>
-
-              <div className="relative">
-                <input
-                  type={
-                    showPassword
-                      ? "text"
-                      : "password"
-                  }
-                  value={password}
-                  onChange={(e) =>
-                    setPassword(
-                      e.target.value
-                    )
-                  }
-                  placeholder="Create a strong password"
-                  required
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 pr-11 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-blue-500"
-                />
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowPassword(
-                      (prev) => !prev
-                    )
-                  }
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
-                  aria-label={
-                    showPassword
-                      ? "Hide password"
-                      : "Show password"
-                  }
-                >
-                  {showPassword ? (
-                    <EyeOff size={17} />
-                  ) : (
-                    <Eye size={17} />
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-              <p className="mb-2 text-xs font-medium text-slate-400">
-                Password must contain:
-              </p>
-
-              <div className="space-y-1">
-                {passwordRules.map(
-                  (rule) => (
-                    <div
-                      key={rule.label}
-                      className={`text-xs ${
-                        rule.valid
-                          ? "text-emerald-400"
-                          : "text-slate-500"
-                      }`}
-                    >
+            <div className="space-y-1.5">
+              {passwordRules.map(
+                (rule) => (
+                  <div
+                    key={rule.label}
+                    className={`flex items-center gap-2 text-xs ${
+                      rule.valid
+                        ? "text-emerald-400"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    <span className="w-3.5 text-center">
                       {rule.valid
                         ? "✓"
-                        : "○"}{" "}
-                      {rule.label}
-                    </div>
-                  )
-                )}
-              </div>
+                        : "○"}
+                    </span>
+                    {rule.label}
+                  </div>
+                )
+              )}
             </div>
+          </div>
 
-            <button
-              disabled={loading}
-              className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-60"
-            >
-              {loading
-                ? "Resetting..."
-                : "Reset password"}
-            </button>
-          </form>
-        )}
-      </div>
-    </main>
+          <button
+            disabled={loading}
+            className="h-11 w-full rounded-xl bg-blue-600 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-60"
+          >
+            {loading
+              ? "Resetting..."
+              : "Reset password"}
+          </button>
+        </form>
+      )}
+    </AuthLayout>
   );
 }
 
@@ -235,8 +232,8 @@ export default function ResetPasswordPage() {
   return (
     <Suspense
       fallback={
-        <main className="flex min-h-screen items-center justify-center bg-[#0a0a0a] text-white">
-          Loading...
+        <main className="flex min-h-screen items-center justify-center bg-[#020617]">
+          <div className="text-sm text-slate-400">Loading...</div>
         </main>
       }
     >

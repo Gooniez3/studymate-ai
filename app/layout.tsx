@@ -29,6 +29,13 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} system h-full antialiased`}
       suppressHydrationWarning
     >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("studymate-theme");if(t==="dark"||t==="light"||t==="system"){document.documentElement.classList.remove("dark","light","system");document.documentElement.classList.add(t);}}catch(e){}})();`,
+          }}
+        />
+      </head>
       <body className="min-h-full flex flex-col">
         <SessionProvider>{children}</SessionProvider>
       </body>

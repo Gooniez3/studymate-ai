@@ -107,7 +107,7 @@ export default function VerifyEmailModal({
             }
             inputMode="numeric"
             placeholder="000000"
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-center text-2xl font-semibold tracking-[0.35em] text-white outline-none transition focus:border-blue-500"
+            className="h-14 w-full rounded-xl border border-slate-700/80 bg-slate-800/50 px-4 text-center text-2xl font-semibold tracking-[0.35em] text-white outline-none transition focus:border-blue-500"
           />
         </div>
 
@@ -127,7 +127,7 @@ export default function VerifyEmailModal({
         <button
           onClick={handleVerify}
           disabled={verifying}
-          className="mt-5 w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+          className="mt-5 h-11 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:opacity-60"
         >
           {verifying ? "Verifying..." : "Verify email"}
         </button>
@@ -135,7 +135,7 @@ export default function VerifyEmailModal({
         <button
           onClick={handleResend}
           disabled={resending}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-900 disabled:opacity-60"
+          className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/30 text-sm font-medium text-slate-300 transition hover:bg-slate-800/60 disabled:opacity-60"
         >
           <RefreshCw size={15} />
           {resending ? "Sending..." : "Resend code"}
