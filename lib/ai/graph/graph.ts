@@ -2040,13 +2040,7 @@ function routeAfterRouter(
   return state.route;
 }
 
-async function directNode() {
-  console.log(
-    "LangGraph node: direct"
-  );
 
-  return {};
-}
 
 async function documentNode(
   state: StudyMateGraphState
@@ -2295,10 +2289,7 @@ export const studyMateGraph =
       "router",
       routerNode
     )
-    .addNode(
-      "direct",
-      directNode
-    )
+
     .addNode(
       "document",
       documentNode
@@ -2339,7 +2330,7 @@ export const studyMateGraph =
       "router",
       routeAfterRouter,
       {
-        direct: "direct",
+        direct: "generate_response",
         document: "document",
         web: "web",
         quiz: "quiz",
@@ -2348,10 +2339,7 @@ export const studyMateGraph =
         assignment: "assignment",
       }
     )
-    .addEdge(
-      "direct",
-      "generate_response"
-    )
+
     .addEdge(
       "document",
       "generate_response"
