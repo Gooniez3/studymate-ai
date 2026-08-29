@@ -4,7 +4,7 @@ import {
 
 function getDatabaseUrl(): string {
   const databaseUrl =
-    process.env.DIRECT_URL;
+    process.env.DATABASE_URL;
 
   if (!databaseUrl) {
     throw new Error(
