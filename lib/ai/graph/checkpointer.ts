@@ -4,11 +4,11 @@ import {
 
 function getDatabaseUrl(): string {
   const databaseUrl =
-    process.env.DATABASE_URL;
+    process.env.DIRECT_URL;
 
   if (!databaseUrl) {
     throw new Error(
-      "DATABASE_URL is not configured."
+      "DIRECT_URL is not configured."
     );
   }
 
