@@ -20,19 +20,6 @@ const saver =
     getDatabaseUrl()
   );
 
-/*
- * Pool diagnostics: measure how long
- * pool.connect() takes vs the actual
- * SQL work inside put()/putWrites().
- *
- * The pool is a public property on
- * PostgresSaver. We read its getter-
- * based stats before and after connect
- * to detect:
- *  - idle client reuse (fast path)
- *  - queue wait (pool exhausted)
- *  - new physical connection creation
- */
 type PoolStats = {
   idle: number;
   total: number;
@@ -43,6 +30,103 @@ const pool = (saver as any).pool;
 
 const _originalPoolConnect =
   pool.connect.bind(pool);
+
+/*
+ * Track which PoolClient instances have
+ * already been instrumented so we never
+ * wrap the same client twice.
+ */
+const instrumentedClients =
+  new WeakSet<object>();
+
+function instrumentClientQuery(
+  client: any
+) {
+  if (
+    instrumentedClients.has(client)
+  ) {
+    return;
+  }
+
+  instrumentedClients.add(client);
+
+  const originalQuery =
+    client.query.bind(client);
+
+  client.query =
+    function (...args: any[]) {
+      const sql =
+        typeof args[0] === "string"
+          ? args[0]
+          : args[0]?.text ?? "";
+
+      const upperSql =
+        sql.toUpperCase().trim();
+
+      const isCheckpoint =
+        upperSql === "BEGIN" ||
+        upperSql === "COMMIT" ||
+        upperSql === "ROLLBACK" ||
+        sql.includes(
+          "checkpoint_blobs"
+        ) ||
+        sql.includes(
+          "checkpoint_writes"
+        ) ||
+        sql.includes("checkpoints");
+
+      if (!isCheckpoint) {
+        return originalQuery(
+          ...args
+        );
+      }
+
+      const label =
+        upperSql === "BEGIN"
+          ? "BEGIN"
+          : upperSql === "COMMIT"
+            ? "COMMIT"
+            : upperSql === "ROLLBACK"
+              ? "ROLLBACK"
+              : sql.includes(
+                  "checkpoint_blobs"
+                )
+                ? "checkpoint_blobs"
+                : sql.includes(
+                    "checkpoint_writes"
+                  )
+                  ? "checkpoint_writes"
+                  : sql.includes(
+                      "checkpoints"
+                    )
+                    ? "checkpoints"
+                    : "query";
+
+      const t0 =
+        performance.now();
+
+      const result =
+        originalQuery(...args);
+
+      if (
+        result &&
+        typeof result.then ===
+          "function"
+      ) {
+        return result.then(
+          (res: any) => {
+            console.log(
+              `[checkpoint-sql] ${label} duration=${Math.round(performance.now() - t0)}ms`
+            );
+
+            return res;
+          }
+        );
+      }
+
+      return result;
+    };
+}
 
 pool.connect = function (
   ...connectArgs: any[]
@@ -65,6 +149,10 @@ pool.connect = function (
   ) {
     return result.then(
       (client: any) => {
+        instrumentClientQuery(
+          client
+        );
+
         const duration = Math.round(
           performance.now() - t0
         );
@@ -102,7 +190,6 @@ saver.put = async function (
 ) {
   const t0 = performance.now();
 
-  const pool = (saver as any).pool;
   const statsBefore: PoolStats = {
     idle: pool.idleCount ?? 0,
     total: pool.totalCount ?? 0,
@@ -128,7 +215,8 @@ saver.put = async function (
     );
 
     const newPhysical =
-      statsAfter.total > statsBefore.total;
+      statsAfter.total >
+      statsBefore.total;
 
     console.log(
       `[checkpoint] put end duration=${duration}ms pool idle=${statsAfter.idle} total=${statsAfter.total} waiting=${statsAfter.waiting}${newPhysical ? " NEW_PHYSICAL_CONNECT" : ""}`
@@ -151,7 +239,6 @@ saver.putWrites = async function (
 
   const writes = args[1];
 
-  const pool = (saver as any).pool;
   const statsBefore: PoolStats = {
     idle: pool.idleCount ?? 0,
     total: pool.totalCount ?? 0,
@@ -176,7 +263,8 @@ saver.putWrites = async function (
     );
 
     const newPhysical =
-      statsAfter.total > statsBefore.total;
+      statsAfter.total >
+      statsBefore.total;
 
     console.log(
       `[checkpoint] putWrites end duration=${duration}ms pool idle=${statsAfter.idle} total=${statsAfter.total} waiting=${statsAfter.waiting}${newPhysical ? " NEW_PHYSICAL_CONNECT" : ""}`
