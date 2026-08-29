@@ -519,6 +519,22 @@ export async function routerNode(
     incomingPreviousRoute ===
       "document";
 
+  if (state.webSearchEnabled) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "web",
+        matched: "web search enabled",
+      }
+    );
+
+    return {
+      route: "web",
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
   // 1. Explicit quiz request -> quiz
   if (
     !SOFTWARE_CONTEXT_PATTERN.test(
