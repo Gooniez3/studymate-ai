@@ -47,6 +47,7 @@ export default function ChatPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -200,6 +201,7 @@ export default function ChatPage() {
     setInput("");
     setSelectedFile(null);
     setOpenMenuId(null);
+    setStatusMessage(null);
 
     localStorage.removeItem(
   ACTIVE_CHAT_KEY
@@ -212,6 +214,7 @@ export default function ChatPage() {
     setInput("");
     setSelectedFile(null);
     setOpenMenuId(null);
+    setStatusMessage(null);
 
     if (mode === "exam") {
       setMessages([
@@ -520,6 +523,14 @@ const updateQuizMessage =
 
   setIsLoading(true);
 
+  if (fileToSend) {
+    setStatusMessage("Reading document...");
+  } else if (webSearchEnabled) {
+    setStatusMessage("Searching the web...");
+  } else {
+    setStatusMessage("Thinking...");
+  }
+
   let chatIdForRequest =
     activeChatId;
 
@@ -747,6 +758,10 @@ const updateQuizMessage =
        * Hidden quiz JSON never
        * appears in the UI.
        */
+      if (visibleAssistantReply) {
+        setStatusMessage(null);
+      }
+
       setMessages([
         ...chatHistory,
 
@@ -926,6 +941,7 @@ const updateQuizMessage =
     );
   } finally {
     setIsLoading(false);
+    setStatusMessage(null);
   }
 };
 
@@ -972,6 +988,7 @@ const updateQuizMessage =
           bottomRef={bottomRef}
           copiedCode={copiedCode}
           isLoading={isLoading}
+          statusMessage={statusMessage}
           webSearchEnabled={webSearchEnabled}
           onCopyCode={copyCode}
           onQuizChange={

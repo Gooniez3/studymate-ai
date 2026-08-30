@@ -26,6 +26,9 @@ type ChatMessagesProps = {
   isLoading:
     boolean;
 
+  statusMessage:
+    string | null;
+
   webSearchEnabled:
     boolean;
 
@@ -44,6 +47,7 @@ export default function ChatMessages({
   bottomRef,
   copiedCode,
   isLoading,
+  statusMessage,
   webSearchEnabled,
   onCopyCode,
   onQuizChange,
@@ -92,6 +96,45 @@ export default function ChatMessages({
                       }
                     />
                   )}
+
+                  {!message.content &&
+                    isLoading &&
+                    statusMessage && (
+                      <div className="flex items-center gap-2.5 py-1">
+                        <span className="text-sm text-slate-500 dark:text-slate-400">
+                          {statusMessage}
+                        </span>
+                        <span className="flex gap-1">
+                          <span
+                            className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-500"
+                            style={{
+                              animation:
+                                "thinking-dot 1.4s infinite",
+                              animationDelay:
+                                "0s",
+                            }}
+                          />
+                          <span
+                            className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-500"
+                            style={{
+                              animation:
+                                "thinking-dot 1.4s infinite",
+                              animationDelay:
+                                "0.2s",
+                            }}
+                          />
+                          <span
+                            className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-500"
+                            style={{
+                              animation:
+                                "thinking-dot 1.4s infinite",
+                              animationDelay:
+                                "0.4s",
+                            }}
+                          />
+                        </span>
+                      </div>
+                    )}
 
                   {message.quiz && (
                     <QuizCard
@@ -168,22 +211,12 @@ export default function ChatMessages({
           )
         )}
 
-        {isLoading &&
-          webSearchEnabled && (
-            <div className="flex justify-start gap-3">
-              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 p-1.5 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
-                <Bot
-                  size={14}
-                />
-              </div>
-
-              <div className="mt-1 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                <span className="animate-pulse">
-                  Searching the web...
-                </span>
-              </div>
-            </div>
-          )}
+        <style>{`
+          @keyframes thinking-dot {
+            0%, 60%, 100% { opacity: 0.2; transform: scale(0.8); }
+            30% { opacity: 1; transform: scale(1); }
+          }
+        `}</style>
 
         <div
           ref={
