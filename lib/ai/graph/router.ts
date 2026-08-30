@@ -350,8 +350,6 @@ const QUIZ_FOLLOWUP_PATTERNS = [
   /\btry\s+again\b/i,
 
   /\b\d+\s+(questions?|mcqs?|quizzes)\b/i,
-
-  /\b(quiz|questions?|mcqs?)\s+\d+\b/i,
 ];
 
 const EXPLICIT_DOCUMENT_PATTERNS = [

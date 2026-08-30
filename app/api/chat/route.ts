@@ -1005,6 +1005,7 @@ void (async () => {
     }
 
     if (
+      graphResult.route === "quiz" &&
       graphResult.quizData
     ) {
       const quizMetadata =
