@@ -953,6 +953,39 @@ export async function routerNode(
     };
   }
 
+  // 13b. Contextual quiz review/explanation follow-up -> direct
+  // Catches requests that refer to a previous quiz for understanding,
+  // not for generating a new quiz. Only applies after step 13 already
+  // handled quiz-generation requests.
+  if (
+    incomingPreviousRoute ===
+      "quiz" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    userMessage.trim().length <=
+      150 &&
+    /\b(summary|summarize|summarise|explain|explanation|understand|teach|notes?|why\b[^?]*\bquestion\b|question\s+\d+\b.*\b(wrong|correct|answer|mean|explain))\b/i.test(
+      userMessage
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "direct",
+        matched:
+          "quiz review/explanation follow-up",
+      }
+    );
+
+    return {
+      route: "direct",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
   // 14. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);

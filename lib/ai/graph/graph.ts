@@ -1617,6 +1617,114 @@ function estimateResponseBudget(
   return 900;
 }
 
+function formatQuizContext(
+  quiz: {
+    title: string;
+    questions: {
+      question: string;
+      options: string[];
+      answer: string;
+      explanation: string;
+    }[];
+    answers?: Record<number, string>;
+    submitted?: boolean;
+    score?: number | null;
+  }
+): string {
+  if (
+    !quiz ||
+    typeof quiz !== "object" ||
+    !Array.isArray(quiz.questions)
+  ) {
+    return "None";
+  }
+
+  const lines: string[] = [
+    `Title: ${quiz.title ?? "Untitled"}`,
+    "",
+  ];
+
+  for (
+    let i = 0;
+    i < quiz.questions.length;
+    i++
+  ) {
+    const q = quiz.questions[i];
+
+    if (
+      !q ||
+      typeof q !== "object"
+    ) {
+      continue;
+    }
+
+    const userAnswer =
+      quiz.answers?.[i];
+
+    lines.push(
+      `Question ${i + 1}: ${q.question ?? "N/A"}`
+    );
+
+    const opts = Array.isArray(
+      q.options
+    )
+      ? q.options
+      : [];
+
+    for (
+      let j = 0;
+      j < opts.length;
+      j++
+    ) {
+      const letter = String.fromCharCode(
+        65 + j
+      );
+      const isCorrect =
+        opts[j] === q.answer;
+      const marker = isCorrect
+        ? " (correct)"
+        : "";
+
+      lines.push(
+        `  ${letter}. ${opts[j]}${marker}`
+      );
+    }
+
+    if (
+      userAnswer !== undefined
+    ) {
+      const wasCorrect =
+        userAnswer === q.answer;
+
+      lines.push(
+        `  User answer: ${userAnswer} (${
+          wasCorrect
+            ? "correct"
+            : "incorrect"
+        })`
+      );
+    }
+
+    lines.push(
+      `  Explanation: ${q.explanation ?? "N/A"}`
+    );
+
+    lines.push("");
+  }
+
+  if (
+    quiz.submitted &&
+    quiz.score !== undefined &&
+    quiz.score !== null
+  ) {
+    lines.push(
+      `Score: ${quiz.score}/${quiz.questions.length}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
 type ResponseNodeConfig = {
   configurable?: {
     /*
@@ -1804,6 +1912,13 @@ ${state.webContext || "None"}
 
 WEB EVIDENCE VERIFICATION:
 ${state.verificationContext || "None"}
+
+PREVIOUS QUIZ:
+${
+  state.quizData
+    ? formatQuizContext(state.quizData)
+    : "None"
+}
 
 GENERAL RULES:
 - Be clear, accurate, and focused.

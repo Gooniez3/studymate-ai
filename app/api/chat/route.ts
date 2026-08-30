@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma/client";
+import type { QuizData } from "@/types/chat";
 import {
   retrieveDocumentChunks,
   type RetrievedChunk,
@@ -774,6 +776,40 @@ if (chatId) {
         timeStyle: "short",
       });
 
+    // Load the latest persisted quiz for this chat.
+    // PATCH stores the full interactive quiz state
+    // (answers, submitted, score) in Message.quiz,
+    // but LangGraph checkpoint only has the original
+    // quizNode output. This bridge gives responseNode
+    // access to the user's actual answers.
+    let latestQuizData: QuizData | null = null;
+
+    if (chatId) {
+      try {
+        const lastQuizMsg =
+          await prisma.message.findFirst({
+            where: {
+              chatId,
+              quiz: {
+                not: Prisma.AnyNull,
+              },
+            },
+            orderBy: [
+              { position: "desc" },
+              { createdAt: "desc" },
+            ],
+            select: { quiz: true },
+          });
+
+        if (lastQuizMsg?.quiz) {
+          latestQuizData =
+            lastQuizMsg.quiz as QuizData;
+        }
+      } catch {
+        // Non-critical: proceed without quiz context
+      }
+    }
+
       const graphMessages = messages
   .filter(
     (msg: ClientMessage) =>
@@ -907,6 +943,8 @@ void (async () => {
           webSources: [],
 
           documentCitations: [],
+
+          quizData: latestQuizData,
 
           error: null,
         },
