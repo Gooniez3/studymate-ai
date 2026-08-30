@@ -259,6 +259,7 @@ export function resolveQuizTopic(
     | "assignment"
     | null,
   stateTopics: {
+    quizTopic?: string;
     revisionTopic?: string;
     plannerTopic?: string;
     assignmentTopic?: string;
@@ -271,21 +272,6 @@ export function resolveQuizTopic(
     /["'`][^"'`]*["'`]/g,
     " "
   );
-
-  const hasRef =
-    /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
-      unquoted
-    ) ||
-    /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
-      lower
-    ) ||
-    /\bjust\s+discussed\b/.test(
-      lower
-    );
-
-  if (!hasRef) {
-    return userMessage;
-  }
 
   /*
    * If the message also contains an explicit
@@ -310,6 +296,46 @@ export function resolveQuizTopic(
     if (!isOnlyRef) {
       return userMessage;
     }
+  }
+
+  const hasRef =
+    /\b(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above)\b/.test(
+      unquoted
+    ) ||
+    /\bwhat\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read)\b/.test(
+      lower
+    ) ||
+    /\bjust\s+discussed\b/.test(
+      lower
+    );
+
+  /*
+   * Quiz contextual follow-ups: phrases that
+   * implicitly refer to the previous quiz topic
+   * without explicit referential words.
+   *
+   * "more easier", "make it harder", "another
+   * one", "try again", "give me 10 questions",
+   * "same difficulty" — all refer to the
+   * previous quiz when no new topic is named.
+   */
+  const isQuizModification =
+    previousRoute === "quiz" &&
+    /\b(easier|harder|more\s+easy|more\s+hard|more\s+easier|more\s+harder|more\s+difficult|same\s+difficulty|same\s+level|another\s+quiz|another\s+one|one\s+more\s+quiz|one\s+more|try\s+(the\s+)?quiz\s+again|try\s+again)\b/.test(
+      lower
+    ) &&
+    stateTopics.quizTopic &&
+    !explicitTopicAfterPrep;
+
+  if (!hasRef && !isQuizModification) {
+    return userMessage;
+  }
+
+  if (
+    previousRoute === "quiz" &&
+    stateTopics.quizTopic
+  ) {
+    return stateTopics.quizTopic;
   }
 
   if (
@@ -463,6 +489,8 @@ export async function quizNode(
         userMessage,
         state.previousRoute,
         {
+          quizTopic:
+            state.quizTopic,
           revisionTopic:
             state.revisionTopic,
           plannerTopic:

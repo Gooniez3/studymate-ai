@@ -327,6 +327,33 @@ const PLANNER_FOLLOWUP_PATTERNS = [
   /\binstead\b/i,
 ];
 
+/*
+ * Short modification requests that continue
+ * an existing quiz conversation, e.g.
+ * "make it easier", "another one", "try again",
+ * "give me 10 questions".
+ *
+ * Conservative: only matches clearly quiz-related
+ * continuations. Generic phrases like "give me"
+ * or "make it" alone are NOT included — they
+ * require quiz-specific vocabulary to match.
+ */
+const QUIZ_FOLLOWUP_PATTERNS = [
+  /\b(easier|harder|more\s+easy|more\s+hard|more\s+easier|more\s+harder|more\s+difficult)\b/i,
+
+  /\b(same\s+difficulty|same\s+level)\b/i,
+
+  /\b(another\s+quiz|one\s+more\s+quiz|try\s+(the\s+)?quiz\s+again)\b/i,
+
+  /\b(another\s+one|one\s+more)\b/i,
+
+  /\btry\s+again\b/i,
+
+  /\b\d+\s+(questions?|mcqs?|quizzes)\b/i,
+
+  /\b(quiz|questions?|mcqs?)\s+\d+\b/i,
+];
+
 const EXPLICIT_DOCUMENT_PATTERNS = [
   /\b(my|our|his|her|their|your)\s+(uploaded\s+|attached\s+|provided\s+)?(pdf|pdfs|documents?|docs?|files?|notes?|slides?|lectures?|chapters?|materials?|readings?)\b/i,
 
@@ -897,7 +924,38 @@ export async function routerNode(
     };
   }
 
-  // 13. Context-enriched routing LLM for everything else
+  // 13. Modification follow-up to a previous quiz -> quiz (skips the routing LLM)
+  if (
+    incomingPreviousRoute ===
+      "quiz" &&
+    !CURRENT_INFO_PATTERN.test(
+      userMessage
+    ) &&
+    userMessage.trim().length <=
+      120 &&
+    QUIZ_FOLLOWUP_PATTERNS.some(
+      (pattern) =>
+        pattern.test(userMessage)
+    )
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "quiz",
+        matched:
+          "quiz modification follow-up",
+      }
+    );
+
+    return {
+      route: "quiz",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
+  // 14. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);
 

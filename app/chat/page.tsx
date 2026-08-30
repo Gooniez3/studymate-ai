@@ -62,6 +62,13 @@ export default function ChatPage() {
   const ACTIVE_CHAT_KEY =
   "studymate-active-chat-id";
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(messages.length);
+  const prevLastContentRef = useRef(
+    messages.length > 0
+      ? messages[messages.length - 1].content
+      : ""
+  );
+  const prevChatIdRef = useRef(activeChatId);
 
   const applyTheme = (theme: AppTheme) => {
     document.documentElement.classList.remove("dark", "light", "system");
@@ -182,8 +189,25 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const prevCount = prevCountRef.current;
+    const prevContent = prevLastContentRef.current;
+    const prevChatId = prevChatIdRef.current;
+    const count = messages.length;
+    const lastContent =
+      count > 0 ? messages[count - 1].content : "";
+
+    prevCountRef.current = count;
+    prevLastContentRef.current = lastContent;
+    prevChatIdRef.current = activeChatId;
+
+    const countGrew = count > prevCount;
+    const contentChanged = lastContent !== prevContent;
+    const chatChanged = activeChatId !== prevChatId;
+
+    if (countGrew || chatChanged || (contentChanged && isLoading)) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, isLoading, activeChatId]);
 
   const createChatTitle = (text: string, file?: File | null) => {
     if (text.trim()) return text.trim().slice(0, 35);
