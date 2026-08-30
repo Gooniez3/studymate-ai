@@ -42,6 +42,7 @@ type ChatSidebarProps = {
    */
   isMobileOpen?: boolean;
   onCloseMobile?: () => void;
+  isInitialLoading?: boolean;
 };
 
 type ChatGroup = {
@@ -134,6 +135,7 @@ export default function ChatSidebar({
 
   isMobileOpen = false,
   onCloseMobile,
+  isInitialLoading = false,
 }: ChatSidebarProps) {
   const [searchQuery, setSearchQuery] =
     useState("");
@@ -382,7 +384,13 @@ export default function ChatSidebar({
             )}
 
             <nav className="scrollbar-slim min-h-0 flex-1 overflow-y-auto pb-2 pr-0.5">
-              {chatSessions.length ===
+              {isInitialLoading ? (
+                <div className="space-y-2 px-2.5 pt-3">
+                  <div className="h-8 w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800" />
+                  <div className="h-8 w-4/5 animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800" />
+                  <div className="h-8 w-3/5 animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800" />
+                </div>
+              ) : chatSessions.length ===
               0 ? (
                 <p className="px-2 py-4 text-[13px] text-slate-400">
                   No conversations yet.

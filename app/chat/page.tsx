@@ -48,6 +48,7 @@ export default function ChatPage() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -165,6 +166,8 @@ export default function ChatPage() {
       "Failed to load chats:",
       error
     );
+  } finally {
+    setIsInitialLoading(false);
   }
 };
 
@@ -949,7 +952,9 @@ const updateQuizMessage =
     (chat) => chat.id === activeChatId
   );
 
-  const headerTitle = activeChat
+  const headerTitle = isInitialLoading
+    ? "StudyMate AI"
+    : activeChat
     ? activeChat.title
     : activeMode
     ? "New conversation"
@@ -974,6 +979,7 @@ const updateQuizMessage =
         onSpecialChat={startSpecialChat}
         userName={profileName || session?.user?.name}
         userImage={profileImage || session?.user?.image}
+        isInitialLoading={isInitialLoading}
       />
 
       <section className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
