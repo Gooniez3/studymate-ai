@@ -59,6 +59,11 @@ import {
   renderAssignmentMarkdown,
 } from "@/lib/ai/agents/assignment-assistant-agent";
 
+import {
+  getModePrompt,
+  getPdfRules,
+} from "@/lib/ai/prompts";
+
 /*
  * Detects whether the message contains a
  * substantial pasted draft that is itself the
@@ -2087,6 +2092,15 @@ WEB ROUTE:
 - If the verification verdict is PARTIAL, clearly communicate uncertainty where relevant.
 - If the verification verdict is INSUFFICIENT, do not guess the answer.
 - If sources conflict, mention the conflict when it matters to the user's question.
+
+${state.mode === "career" ? `
+CAREER MODE:
+${getModePrompt(state.mode)}
+${state.documentNames.length > 0 ? getPdfRules(state.mode, state.documentNames[0]) : ""}
+- Do not invent work experience, education, skills, certifications, achievements, metrics, or job titles the user has not provided.
+- If the user asks for improvements and no CV or career content has been shared yet, ask them to paste or upload their CV, resume, or LinkedIn profile section.
+- When suggesting improvements, clearly mark suggestions as examples or recommendations rather than stating them as facts about the user's background.
+`.trim() : ""}
 
 PRESENTATION:
 - Match the structure and length to the user's question.
