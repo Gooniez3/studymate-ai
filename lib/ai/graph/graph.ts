@@ -1687,6 +1687,10 @@ export async function assignmentNode(
  * requests get fewer tokens, explicit
  * requests for detail get more. Never
  * unbounded.
+ *
+ * Tiers: English short=900, normal=1300,
+ * detailed=1600. Non-Latin normal=1600,
+ * detailed=2400.
  */
 function estimateResponseBudget(
   userMessage: string
@@ -1728,22 +1732,22 @@ function estimateResponseBudget(
 
   if (hasNonLatin) {
     if (wantsDetail) {
-      return 2000;
+      return 2400;
     }
-    return 1300;
+    return 1600;
   }
 
   if (wantsDetail) {
-    return 1300;
+    return 1600;
   }
 
   if (
     userMessage.trim().length < 60
   ) {
-    return 600;
+    return 900;
   }
 
-  return 900;
+  return 1300;
 }
 
 function formatQuizContext(
@@ -2296,21 +2300,7 @@ OUTPUT FORMATTING:
       error
     );
 
-    const response =
-      "StudyMate AI could not generate a response.";
-
-    return {
-      response,
-
-      messages: [
-        new AIMessage(
-          response
-        ),
-      ],
-
-      error:
-        "Response generation failed.",
-    };
+    throw error;
   }
 }
 

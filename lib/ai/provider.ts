@@ -1818,19 +1818,35 @@ async function attemptStreamStart(
 
       let emitted = false;
 
+      let finishReason: string | null =
+        null;
+
       try {
         for await (const chunk of iterable) {
+          const typed =
+            chunk as {
+              choices?: {
+                delta?: {
+                  content?: string;
+                };
+                finish_reason?: string | null;
+              }[];
+            };
+
           const delta =
-            (
-              chunk as {
-                choices?: {
-                  delta?: {
-                    content?: string;
-                  };
-                }[];
-              }
-            ).choices?.[0]?.delta
+            typed.choices?.[0]?.delta
               ?.content;
+
+          const fr =
+            typed.choices?.[0]
+              ?.finish_reason;
+
+          if (
+            fr !== undefined &&
+            fr !== null
+          ) {
+            finishReason = fr;
+          }
 
           if (delta) {
             content += delta;
@@ -1846,10 +1862,40 @@ async function attemptStreamStart(
             `[ai] stream interrupted mid-answer provider=${attempt.provider} model=${attempt.model}`
           );
 
-          return content;
+          const interruptedError =
+            new Error(
+              `Stream interrupted after ${content.length} chars`
+            );
+
+          interruptedError.name =
+            "StreamInterruptedError";
+
+          interruptedError.cause =
+            streamError;
+
+          throw interruptedError;
         }
 
         throw streamError;
+      }
+
+      if (
+        finishReason === "length" ||
+        finishReason === "max_tokens"
+      ) {
+        console.log(
+          `[ai] stream finished due to token limit provider=${attempt.provider} model=${attempt.model} finish_reason=${finishReason}`
+        );
+
+        const tokenLimitError =
+          new Error(
+            "Response reached provider output token limit"
+          );
+
+        tokenLimitError.name =
+          "TokenLimitError";
+
+        throw tokenLimitError;
       }
 
       return content;
@@ -1920,10 +1966,23 @@ async function attemptStreamStart(
 
       let emitted = false;
 
+      let finishReason: string | null =
+        null;
+
       try {
-        for await (const chunk of stream as AsyncIterable<{ text?: string }>) {
+        for await (const chunk of stream as AsyncIterable<{
+          text?: string;
+          finishReason?: string;
+        }>) {
           const delta =
             chunk.text ?? "";
+
+          if (
+            chunk.finishReason
+          ) {
+            finishReason =
+              chunk.finishReason;
+          }
 
           if (delta) {
             content += delta;
@@ -1939,10 +1998,40 @@ async function attemptStreamStart(
             `[ai] stream interrupted mid-answer provider=${attempt.provider} model=${attempt.model}`
           );
 
-          return content;
+          const interruptedError =
+            new Error(
+              `Stream interrupted after ${content.length} chars`
+            );
+
+          interruptedError.name =
+            "StreamInterruptedError";
+
+          interruptedError.cause =
+            streamError;
+
+          throw interruptedError;
         }
 
         throw streamError;
+      }
+
+      if (
+        finishReason === "length" ||
+        finishReason === "max_tokens"
+      ) {
+        console.log(
+          `[ai] stream finished due to token limit provider=${attempt.provider} model=${attempt.model} finish_reason=${finishReason}`
+        );
+
+        const tokenLimitError =
+          new Error(
+            "Response reached provider output token limit"
+          );
+
+        tokenLimitError.name =
+          "TokenLimitError";
+
+        throw tokenLimitError;
       }
 
       return content;
@@ -1985,7 +2074,18 @@ async function attemptStreamStart(
             `[ai] stream interrupted mid-answer provider=${attempt.provider} model=${attempt.model}`
           );
 
-          return content;
+          const interruptedError =
+            new Error(
+              `Stream interrupted after ${content.length} chars`
+            );
+
+          interruptedError.name =
+            "StreamInterruptedError";
+
+          interruptedError.cause =
+            streamError;
+
+          throw interruptedError;
         }
 
         throw streamError;
