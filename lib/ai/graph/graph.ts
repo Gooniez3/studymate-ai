@@ -1598,11 +1598,44 @@ function estimateResponseBudget(
   const text =
     userMessage.toLowerCase();
 
+  /*
+   * Non-Latin scripts (Burmese, CJK, Arabic,
+   * Devanagari, Thai, etc.) consume more tokens
+   * per visible character.  A short Burmese
+   * question may be only 30-50 characters but
+   * still expect a full structured answer.
+   *
+   * Detection: look for any character outside
+   * Basic Latin + Latin-extended + whitespace.
+   * This is deliberately conservative — a
+   * single non-Latin character triggers the
+   * multilingual path.
+   */
+  const hasNonLatin =
+    /[^\u0000-\u024F\s]/.test(
+      userMessage
+    );
+
   const wantsDetail =
     /\b(detail|detailed|comprehensive|in[- ]depth|thoroughly|extensive|everything|full story|long answer)\b/.test(
       text
     ) ||
-    userMessage.trim().length > 220;
+    /*
+     * For non-Latin input, lower the length
+     * threshold that triggers "wantsDetail".
+     * A 100+ char Burmese question is almost
+     * certainly asking for substance.
+     */
+    (hasNonLatin
+      ? userMessage.trim().length > 100
+      : userMessage.trim().length > 220);
+
+  if (hasNonLatin) {
+    if (wantsDetail) {
+      return 2000;
+    }
+    return 1300;
+  }
 
   if (wantsDetail) {
     return 1300;
