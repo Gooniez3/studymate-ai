@@ -437,6 +437,11 @@ const updateQuizMessage =
         }),
       });
 
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `PATCH /api/chats failed (${res.status})`);
+      }
+
       const updatedChat: ChatSession = await res.json();
 
       setChatSessions((prev) =>
@@ -460,6 +465,11 @@ const updateQuizMessage =
         messages: finalMessages,
       }),
     });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `POST /api/chats failed (${res.status})`);
+    }
 
     const newChat: ChatSession = await res.json();
 
