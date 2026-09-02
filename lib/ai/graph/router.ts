@@ -986,6 +986,29 @@ export async function routerNode(
     };
   }
 
+  // 13c. Career mode: route to direct (career-specific handling is in responseNode)
+  // Prevents the generic LLM router from misrouting career requests to assignment.
+  // Document/web routes are already handled by earlier deterministic rules.
+  if (
+    state.mode === "career"
+  ) {
+    console.log(
+      "LangGraph router heuristic:",
+      {
+        route: "direct",
+        matched:
+          "career mode fallback",
+      }
+    );
+
+    return {
+      route: "direct",
+
+      previousRoute:
+        incomingPreviousRoute,
+    };
+  }
+
   // 14. Context-enriched routing LLM for everything else
   const transcript =
     getConversationTranscript(state);
