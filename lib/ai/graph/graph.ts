@@ -1270,6 +1270,97 @@ export async function assignmentNode(
     };
   }
 
+  /*
+   * Missing-input guard: when the user asks for
+   * assignment help but has NOT supplied the
+   * actual assignment (question, rubric, task
+   * sheet, pasted text, or uploaded document),
+   * ask for it instead of inventing generic
+   * requirements.
+   */
+  const hasDocumentContext =
+    state.documentNames.length > 0 ||
+    state.documentAttachedThisTurn;
+
+  const lowerMsg =
+    userMessage.toLowerCase();
+
+  const hasPastedContent =
+    detectPastedReviewTarget(
+      userMessage
+    );
+
+  /*
+   * Action verb present: "solve", "explain",
+   * "compare", "calculate", etc.
+   */
+  const hasActionVerb =
+    /\b(solve|calculate|derive|prove|explain|compare|analy[sz]e|discuss|design|write|create|implement|code|program|review|critique|evaluate|argue|describe|outline|summarize|translate|define|list|identify|classify|contrast)\b/i.test(
+      userMessage
+    );
+
+  /*
+   * Vague assignment reference: the action verb
+   * is directly followed by "my/this/the
+   * assignment/essay/report/etc." — the user
+   * is asking ABOUT the assignment rather than
+   * describing a specific task.
+   */
+  const hasVagueAssignmentRef =
+    /\b(solve|calculate|derive|prove|explain|compare|analy[sz]e|discuss|design|write|create|implement|review|critique|evaluate|describe|outline|summarize|translate|define|help)\s+(me\s+(with\s+)?)?(my|this|the|us)\s+(assignment|essay|report|paper|task|homework|rubric|brief|work|project|problem|question|exercise|assignment)\b/i.test(
+      userMessage
+    );
+
+  const hasConcreteSubject =
+    /\b(equation|formula|theorem|proof|algorithm|concept|theory|principle|system|model|framework|literature|history|science|physics|chemistry|biology|computer|programming|database|network|economy|psychology|philosophy|art|music|architecture|engineering|medicine|law|business|management|marketing|finance|accounting|statistics|math|calculus|algebra|geometry|trigonometry|polymorphism|encapsulation|inheritance|abstraction|TCP|UDP|API|REST|SQL|HTML|CSS|JavaScript|Python|Java|C\+\+|machine\s+learning|artificial\s+intelligence|data\s+structures|algorithms)\b/i.test(
+      userMessage
+    );
+
+  const hasSpecificProblem =
+    /\b(problem|question\s*\d|part\s*[a-d]|step\s*\d)\b/i.test(
+      userMessage
+    ) &&
+    /\d/.test(
+      userMessage
+    );
+
+  /*
+   * Mathematical expression: contains an equals
+   * sign with digits on both sides, or a clear
+   * math operation (e.g. "5x + 10 = 30",
+   * "x^2 - 5x + 6 = 0").
+   */
+  const hasMathExpression =
+    /\d[^=]*=\s*\d/.test(
+      userMessage
+    ) ||
+    /\b(x|y|z)\s*[\^²³]\b/.test(
+      userMessage
+    );
+
+  const hasConcreteTask =
+    hasActionVerb &&
+    !hasVagueAssignmentRef &&
+    (hasConcreteSubject || hasSpecificProblem || hasMathExpression);
+
+  const looksVague =
+    !hasDocumentContext &&
+    !hasPastedContent &&
+    !hasConcreteTask;
+
+  if (looksVague) {
+    return {
+      response:
+        "Of course! To help you effectively, please share the actual assignment — you can paste the question, task sheet, or rubric, or upload the file. Once I have it, I can break down the requirements and guide you through it step by step.",
+      assignmentTopic:
+        userMessage,
+      assignmentContext: "",
+      assignmentData: null,
+      documentCitations: [],
+      error: null,
+    };
+  }
+
   try {
     let assignmentContext = "";
 
