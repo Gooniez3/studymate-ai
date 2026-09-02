@@ -14,6 +14,7 @@ import ChatSidebar from "@/components/chat/ChatSidebar";
 import ChatHeader from "@/components/chat/ChatHeader";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
+import ChatActionModal from "@/components/chat/ChatActionModal";
 import { useSession } from "next-auth/react";
 
 
@@ -54,6 +55,12 @@ export default function ChatPage() {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+
+  const [modalState, setModalState] = useState<{
+    type: "rename" | "delete";
+    chatId: string;
+    currentTitle: string;
+  } | null>(null);
 
   const [profileName, setProfileName] = useState<string | null>(null);
   const [profileImage, setProfileImage] = useState<string | null>(null);
@@ -305,65 +312,72 @@ export default function ChatPage() {
   setOpenMenuId(null);
 };
 
-  const renameChat = async (chatId: string) => {
+  const renameChat = (chatId: string) => {
     const chat = chatSessions.find((c) => c.id === chatId);
     if (!chat) return;
 
-    const newTitle = prompt("Rename chat", chat.title);
-    if (!newTitle || !newTitle.trim()) return;
-
-    try {
-      const res = await fetch(`/api/chats/${chatId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: newTitle.trim() }),
-      });
-
-      const updatedChat: ChatSession = await res.json();
-
-      setChatSessions((prev) =>
-        prev.map((c) => (c.id === chatId ? updatedChat : c))
-      );
-
-      setOpenMenuId(null);
-    } catch {
-      alert("Failed to rename chat.");
-    }
+    setModalState({
+      type: "rename",
+      chatId,
+      currentTitle: chat.title,
+    });
   };
 
-  const deleteChat = async (chatId: string) => {
-    const confirmed = confirm("Delete this chat?");
-    if (!confirmed) return;
+  const handleRenameConfirm = async (chatId: string, newTitle?: string) => {
+    if (!newTitle || !newTitle.trim()) return;
 
-    try {
-      await fetch(`/api/chats/${chatId}`, {
-        method: "DELETE",
-      });
+    const res = await fetch(`/api/chats/${chatId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle.trim() }),
+    });
 
-      const remainingChats = chatSessions.filter((chat) => chat.id !== chatId);
+    const updatedChat: ChatSession = await res.json();
 
-      setChatSessions(remainingChats);
-      setOpenMenuId(null);
+    setChatSessions((prev) =>
+      prev.map((c) => (c.id === chatId ? updatedChat : c))
+    );
 
-      if (activeChatId === chatId) {
-        const nextChat = remainingChats[0];
+    setOpenMenuId(null);
+  };
 
-        if (nextChat) {
-          setActiveChatId(nextChat.id);
-          setActiveMode(
-            nextChat.mode && nextChat.mode !== "default"
-            ? nextChat.mode
-            : null
-          );
-          setMessages(nextChat.messages);
-        } else {
-          setActiveChatId(null);
-          setActiveMode(null);
-          setMessages([starterMessage]);
-        }
+  const deleteChat = (chatId: string) => {
+    const chat = chatSessions.find((c) => c.id === chatId);
+    if (!chat) return;
+
+    setModalState({
+      type: "delete",
+      chatId,
+      currentTitle: chat.title,
+    });
+  };
+
+  const handleDeleteConfirm = async (chatId: string) => {
+    await fetch(`/api/chats/${chatId}`, {
+      method: "DELETE",
+    });
+
+    const remainingChats = chatSessions.filter((chat) => chat.id !== chatId);
+
+    setChatSessions(remainingChats);
+    setOpenMenuId(null);
+
+    if (activeChatId === chatId) {
+      const nextChat = remainingChats[0];
+
+      if (nextChat) {
+        setActiveChatId(nextChat.id);
+        setActiveMode(
+          nextChat.mode && nextChat.mode !== "default"
+          ? nextChat.mode
+          : null
+        );
+        setMessages(nextChat.messages);
+      } else {
+        setActiveChatId(null);
+        setActiveMode(null);
+        setMessages([starterMessage]);
       }
-    } catch {
-      alert("Failed to delete chat.");
     }
   };
   
@@ -1047,6 +1061,20 @@ const updateQuizMessage =
           onSend={sendMessage}
         />
       </section>
+
+      {modalState && (
+        <ChatActionModal
+          type={modalState.type}
+          chatId={modalState.chatId}
+          currentTitle={modalState.currentTitle}
+          onClose={() => setModalState(null)}
+          onConfirm={
+            modalState.type === "rename"
+              ? handleRenameConfirm
+              : handleDeleteConfirm
+          }
+        />
+      )}
     </main>
   );
 }
