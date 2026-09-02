@@ -294,7 +294,7 @@ export function resolveQuizTopic(
       explicitTopicAfterPrep[1].trim();
 
     const isOnlyRef =
-      /^(this|that|it|those|these|them|everything|all of this|all of that|all of it|the same|the above|the same topic|what\s+we|just\s+discussed|what\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read))$/.test(
+      /^(this|that|it|this topic|that topic|these topics|those topics|those|these|them|everything|all of this|all of that|all of it|the same|the above|the same topic|what\s+we|just\s+discussed|what\s+we\s+(just\s+)?(discussed|covered|talked about|went through|read))$/.test(
         after
       );
 
